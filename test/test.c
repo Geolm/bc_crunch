@@ -136,6 +136,31 @@ void make_random(uint32_t* p, uint32_t w, uint32_t h)
             *p++ = iq_random(&seed);
 }
 
+//-----------------------------------------------------------------------------------------------------------------------------
+bool test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
+{
+    for(uint32_t i=range_min; i<=range_max; ++i)
+    {
+        char filename[256];
+        snprintf(filename, 256, format, i);
+
+        fprintf(stdout, "\nopening %s ", filename);
+
+        int width, height, num_channels;
+        unsigned char *data = stbi_load(filename, &width, &height, &num_channels, 4);
+
+        fprintf(stdout, "width : %d height :%d num_channels :%d\n", width, height, num_channels);
+
+        arena_reset(&g_arena);
+
+        if (!test_bc1(data, width, height))
+            return false;
+
+        stbi_image_free(data);
+    }
+    return true;
+}
+
 #define TEXTURE_WIDTH (512)
 #define TEXTURE_HEIGHT (512)
 
@@ -162,25 +187,15 @@ int main(void)
     arena_reset(&g_arena);
 
     // kodak photos
-    for(uint32_t i=1; i<25; ++i)
-    {
-        char filename[256];
-        snprintf(filename, 256, "../textures/kodim%02u.png", i);
+    test_multiple("../textures/kodim%02u.png", 1, 5);
 
-        fprintf(stdout, "\nopening %s ", filename);
+    test_multiple("../textures/Elements_%02u-512x512.png", 1, 6);
 
-        int width, height, num_channels;
-        unsigned char *data = stbi_load(filename, &width, &height, &num_channels, 4);
+    test_multiple("../textures/Dirt_%02u-512x512.png", 12, 17);
 
-        fprintf(stdout, "width : %d height :%d num_channels :%d\n", width, height, num_channels);
+    test_multiple("../textures/Wood_%02u-512x512.png", 4, 7);
 
-        arena_reset(&g_arena);
-
-        if (!test_bc1(data, width, height))
-            return -1;
-
-        stbi_image_free(data);
-    }
+    test_multiple("../textures/Brick_%02d-512x512.png", 10, 14);
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);
