@@ -14,6 +14,8 @@
 #include <stdbool.h>
 
 Arena g_arena = {};
+float global_ratio = 0.f;
+uint32_t num_ratios = 0;
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline int iq_random( int* seed)
@@ -38,7 +40,7 @@ void extract_4x4_block(const uint8_t* rgba, uint32_t width, uint32_t x, uint32_t
 //  - crunch the bc1 blocks into a stream
 //  - compare size of bc1 texture vs crunched texture
 //  - decompress the stream and check it's identical to the bc1 texture
-bool test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
+float test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
 {
     uint32_t bc1_size = (width * height) / 2;
     uint8_t* bc1_texture = arena_alloc(&g_arena, bc1_size);
@@ -56,11 +58,12 @@ bool test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
     }
 
     // TODO : add profiling
-    size_t worst_case = bc1_size * 2;
+    size_t worst_case = bc1_size * 10;
     void* crunched_texture = arena_alloc(&g_arena, worst_case);
     size_t crunched_size = bc1_crunch(bc1_texture, width, height, crunched_texture, worst_case);
+    float ratio = (float) bc1_size / (float) crunched_size;
 
-    fprintf(stdout, "BC1 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc1_size, crunched_size, (double) bc1_size / (double) crunched_size); 
+    fprintf(stdout, "BC1 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc1_size, crunched_size, ratio); 
 
     uint8_t* uncompressed_texture = arena_alloc(&g_arena, bc1_size);
     bc1_decrunch(crunched_texture, crunched_size, width, height, uncompressed_texture);
@@ -71,12 +74,12 @@ bool test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
         if (uncompressed_texture[i] != bc1_texture[i])
         {
             fprintf(stdout, "failed, divergence at the %uth bytes\n", i);
-            return false;
+            return -1.f;
         }
     }
 
     fprintf(stdout, "ok\n");
-    return true;
+    return ratio;
 }
 
 //-----------------------------------------------------------------------------------------------------------------------------
@@ -137,7 +140,7 @@ void make_random(uint32_t* p, uint32_t w, uint32_t h)
 }
 
 //-----------------------------------------------------------------------------------------------------------------------------
-bool test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
+void test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
 {
     for(uint32_t i=range_min; i<=range_max; ++i)
     {
@@ -153,12 +156,15 @@ bool test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
 
         arena_reset(&g_arena);
 
-        if (!test_bc1(data, width, height))
-            return false;
+        float ratio = test_bc1(data, width, height);
+        if (ratio >= 0.f)
+        {
+            global_ratio += ratio;
+            num_ratios++;
+        }
 
         stbi_image_free(data);
     }
-    return true;
 }
 
 #define TEXTURE_WIDTH (512)
@@ -173,15 +179,15 @@ int main(void)
     fprintf(stdout, "synthetic textures tests\n");
     uint8_t* rgba = arena_alloc(&g_arena, TEXTURE_WIDTH * TEXTURE_HEIGHT * 4);
     uniform_texture(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0xef, 0x7d, 0x57);
-    if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
+    if (test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT) < 0.f)
         return -1;
 
     make_radial((uint32_t*)rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0xffff1010, 0xff1010ff);
-    if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
+    if (test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT) < 0.f)
         return -1;
 
     make_random((uint32_t*)rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT);
-    if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
+    if (test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT) < 0.f)
         return -1;
 
     arena_reset(&g_arena);
@@ -196,6 +202,8 @@ int main(void)
     test_multiple("../textures/Wood_%02u-512x512.png", 4, 7);
 
     test_multiple("../textures/Brick_%02d-512x512.png", 10, 14);
+
+    fprintf(stdout, "\nglobal ratio : %f\n", global_ratio / (float) num_ratios);
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);

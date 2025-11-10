@@ -167,17 +167,18 @@ typedef struct bc1_block
 } bc1_block;
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t delta_encode(uint8_t prev, uint8_t curr, uint8_t num_bits) 
+static inline uint8_t delta_encode(uint8_t prev, uint8_t curr, uint8_t num_bits)
 {
-    uint8_t mask = (1<<num_bits)-1;
-    return (curr - prev) & mask;
+    int delta = (int)curr - (int)prev;
+    return (uint8_t)(delta + (1 << (num_bits - 1)));
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t delta_decode(uint8_t prev, uint8_t delta, uint8_t num_bits)
+static inline uint8_t delta_decode(uint8_t prev, uint8_t delta_encoded, uint8_t num_bits)
 {
-    uint8_t mask = (1<<num_bits)-1;
-    return (prev + delta) & mask;
+    int delta = (int)delta_encoded - (1 << (num_bits - 1));
+    int curr = (int)prev + delta;
+    return (uint8_t)curr;
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -194,25 +195,9 @@ static inline uint16_t bc1_pack_565(uint8_t r5, uint8_t g6, uint8_t b5)
     return (uint16_t)(((uint16_t)r5 << 11) | ((uint16_t)g6 << 5) | (uint16_t)b5);
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void morton_inverse(uint32_t index, uint32_t* x, uint32_t* y)
-{
-    uint32_t xx = 0;
-    uint32_t yy = 0;
-    for (uint32_t i = 0; i < 10; ++i)
-    {
-        xx |= ((index >> (2 * i)) & 1) << i;
-        yy |= ((index >> (2 * i + 1)) & 1) << i;
-    }
-    *x = xx;
-    *y = yy;
-}
-
-
-
-#define RED_NUM_BITS (5)
-#define GREEN_NUM_BITS (6)
-#define BLUE_NUM_BITS (5)
+#define RED_NUM_BITS (6)
+#define GREEN_NUM_BITS (7)
+#define BLUE_NUM_BITS (6)
 #define BC1_ROW_INDICES_NUM_BITS (8)
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -223,7 +208,8 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
 {
     assert((width%4 == 0) && (height%4 == 0));
 
-    uint32_t num_blocks = (width + 3)/4 * (height + 3)/4;
+    uint32_t height_blocks = height/4;
+    uint32_t width_blocks = width/4;
 
     range_codec codec;
     enc_init(&codec, (uint8_t*) output, length);
@@ -244,27 +230,30 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
     bc1_block* blocks = (bc1_block*) input;
     bc1_block* previous = &empty_block;
 
-    for(uint32_t i=0; i<num_blocks; ++i)
+    for(uint32_t y = 0; y < height_blocks; ++y)
     {
-        bc1_block* current = &blocks[i];
-
-        for(uint32_t j=0; j<2; ++j)
+        for(uint32_t x = 0; x < width_blocks; ++x)
         {
-            uint8_t current_red, current_green, current_blue;
-            uint8_t previous_red, previous_green, previous_blue;
+            bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
 
-            bc1_extract_565(current->color[j], &current_red, &current_green, &current_blue);
-            bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
+            for(uint32_t j=0; j<2; ++j)
+            {
+                uint8_t current_red, current_green, current_blue;
+                uint8_t previous_red, previous_green, previous_blue;
 
-            enc_put(&codec, &red[j], delta_encode(previous_red, current_red, RED_NUM_BITS));
-            enc_put(&codec, &green[j], delta_encode(previous_green, current_green, GREEN_NUM_BITS));
-            enc_put(&codec, &blue[j], delta_encode(previous_blue, current_blue, BLUE_NUM_BITS));
+                bc1_extract_565(current->color[j], &current_red, &current_green, &current_blue);
+                bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
+
+                enc_put(&codec, &red[j], delta_encode(previous_red, current_red, RED_NUM_BITS));
+                enc_put(&codec, &green[j], delta_encode(previous_green, current_green, GREEN_NUM_BITS));
+                enc_put(&codec, &blue[j], delta_encode(previous_blue, current_blue, BLUE_NUM_BITS));
+            }
+
+            for(uint32_t j=0; j<4; ++j)
+                enc_put(&codec, &rows[j], current->indices[j] ^ previous->indices[j]);
+
+            previous = current;
         }
-
-        for(uint32_t j=0; j<4; ++j)
-            enc_put(&codec, &rows[j], current->indices[j] ^ previous->indices[j]);
-
-        previous = current;
     }
 
     return enc_done(&codec);
@@ -275,7 +264,8 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
-    uint32_t num_blocks = (width + 3)/4 * (height + 3)/4;
+    uint32_t height_blocks = height/4;
+    uint32_t width_blocks = width/4;
 
     range_codec codec;
     dec_init(&codec, (const uint8_t*)input, length);
@@ -296,32 +286,35 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     bc1_block* blocks = (bc1_block*)output;
     bc1_block* previous = &empty_block;
 
-    for (uint32_t i = 0; i < num_blocks; ++i)
+    for(uint32_t y = 0; y < height_blocks; ++y)
     {
-        bc1_block* current = &blocks[i];
-
-        for (uint32_t j = 0; j < 2; ++j)
+        for(uint32_t x = 0; x < width_blocks; ++x)
         {
-            uint8_t previous_red, previous_green, previous_blue;
-            bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
+            bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
 
-            uint8_t delta_red = (uint8_t)dec_get(&codec, &red[j]);
-            uint8_t delta_green = (uint8_t)dec_get(&codec, &green[j]);
-            uint8_t delta_blue = (uint8_t)dec_get(&codec, &blue[j]);
+            for (uint32_t j = 0; j < 2; ++j)
+            {
+                uint8_t previous_red, previous_green, previous_blue;
+                bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
 
-            uint8_t current_red = delta_decode(previous_red, delta_red, RED_NUM_BITS);
-            uint8_t current_green = delta_decode(previous_green, delta_green, GREEN_NUM_BITS);
-            uint8_t current_blue = delta_decode(previous_blue, delta_blue, BLUE_NUM_BITS);
+                uint8_t delta_red = (uint8_t)dec_get(&codec, &red[j]);
+                uint8_t delta_green = (uint8_t)dec_get(&codec, &green[j]);
+                uint8_t delta_blue = (uint8_t)dec_get(&codec, &blue[j]);
 
-            current->color[j] = bc1_pack_565(current_red, current_green, current_blue);
+                uint8_t current_red = delta_decode(previous_red, delta_red, RED_NUM_BITS);
+                uint8_t current_green = delta_decode(previous_green, delta_green, GREEN_NUM_BITS);
+                uint8_t current_blue = delta_decode(previous_blue, delta_blue, BLUE_NUM_BITS);
+
+                current->color[j] = bc1_pack_565(current_red, current_green, current_blue);
+            }
+
+            for (uint32_t j = 0; j < 4; ++j)
+            {
+                uint8_t delta = (uint8_t)dec_get(&codec, &rows[j]);
+                current->indices[j] = previous->indices[j] ^ delta;
+            }
+
+            previous = current;
         }
-
-        for (uint32_t j = 0; j < 4; ++j)
-        {
-            uint8_t delta = (uint8_t)dec_get(&codec, &rows[j]);
-            current->indices[j] = previous->indices[j] ^ delta;
-        }
-
-        previous = current;
     }
 }
