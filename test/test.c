@@ -12,6 +12,13 @@
 Arena g_arena = {};
 
 //----------------------------------------------------------------------------------------------------------------------------
+static inline int iq_random( int* seed)
+{
+    *seed *= 16807;
+    return (*seed) >> 9;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 void extract_4x4_block(const uint8_t* rgba, uint32_t width, uint32_t x, uint32_t y, uint8_t block[64])
 {
     for (uint32_t j = 0; j < 4; j++)
@@ -70,7 +77,21 @@ bool test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
     return true;
 }
 
+//-----------------------------------------------------------------------------------------------------------------------------
+static inline uint32_t lerp_color(uint32_t a, uint32_t b, float t)
+{
+    int tt = (int)(t * 256.f);
+    int oneminust = 256 - tt;
 
+    uint32_t A = (((a >> 24) & 0xFF) * oneminust + ((b >> 24) & 0xFF) * tt) >> 8;
+    uint32_t B = (((a >> 16) & 0xFF) * oneminust + ((b >> 16) & 0xFF) * tt) >> 8;
+    uint32_t G = (((a >> 8)  & 0xFF) * oneminust + ((b >> 8)  & 0xFF) * tt) >> 8;
+    uint32_t R = (((a >> 0)  & 0xFF) * oneminust + ((b >> 0)  & 0xFF) * tt) >> 8;
+
+    return (A << 24) | (B << 16) | (G << 8) | R;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
 void uniform_texture(uint8_t* rgba, uint32_t width, uint32_t height, uint8_t red, uint8_t green, uint8_t blue)
 {
     uint32_t row_bytes = width * 4;
@@ -86,9 +107,37 @@ void uniform_texture(uint8_t* rgba, uint32_t width, uint32_t height, uint8_t red
     }
 }
 
-#define TEXTURE_WIDTH (512)
-#define TEXTURE_HEIGHT (256)
+//-----------------------------------------------------------------------------------------------------------------------------
+void make_radial(uint32_t* p, uint32_t w, uint32_t h, uint32_t a, uint32_t b)
+{
+    float cx = (float)w * 0.5f;
+    float cy = (float)h * 0.5f;
+    float maxd = sqrtf(cx*cx + cy*cy);
 
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) 
+        {
+            float dx = (float)x - cx;
+            float dy = (float)y - cy;
+            float t = sqrtf(dx*dx + dy*dy) / maxd;
+            if (t > 1.f) t = 1.f;
+            *p++ = lerp_color(a, b, t);
+        }
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+void make_random(uint32_t* p, uint32_t w, uint32_t h)
+{
+    int seed = 0x12345678;
+     for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) 
+            *p++ = iq_random(&seed);
+}
+
+#define TEXTURE_WIDTH (512)
+#define TEXTURE_HEIGHT (512)
+
+//-----------------------------------------------------------------------------------------------------------------------------
 int main(void)
 {
     fprintf(stdout, "bc_crunch test suite\n\n");
@@ -99,6 +148,13 @@ int main(void)
     if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
         return -1;
 
+    make_radial((uint32_t*)rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0xffff1010, 0xff1010ff);
+    if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
+        return -1;
+
+    make_random((uint32_t*)rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT);
+    if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
+        return -1;
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);
