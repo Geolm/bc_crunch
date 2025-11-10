@@ -194,6 +194,20 @@ static inline uint16_t bc1_pack_565(uint8_t r5, uint8_t g6, uint8_t b5)
     return (uint16_t)(((uint16_t)r5 << 11) | ((uint16_t)g6 << 5) | (uint16_t)b5);
 }
 
+//----------------------------------------------------------------------------------------------------------------------------
+static inline void morton_inverse(uint32_t index, uint32_t* x, uint32_t* y)
+{
+    uint32_t xx = 0;
+    uint32_t yy = 0;
+    for (uint32_t i = 0; i < 10; ++i)
+    {
+        xx |= ((index >> (2 * i)) & 1) << i;
+        yy |= ((index >> (2 * i + 1)) & 1) << i;
+    }
+    *x = xx;
+    *y = yy;
+}
+
 
 
 #define RED_NUM_BITS (5)
@@ -209,7 +223,7 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
 {
     assert((width%4 == 0) && (height%4 == 0));
 
-    uint32_t num_blocks = (width * height) / 16;
+    uint32_t num_blocks = (width + 3)/4 * (height + 3)/4;
 
     range_codec codec;
     enc_init(&codec, (uint8_t*) output, length);
@@ -261,7 +275,7 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
-    uint32_t num_blocks = (width * height) / 16;
+    uint32_t num_blocks = (width + 3)/4 * (height + 3)/4;
 
     range_codec codec;
     dec_init(&codec, (const uint8_t*)input, length);

@@ -7,6 +7,10 @@
 #define STB_DXT_IMPLEMENTATION
 #include "stb_dxt.h"
 
+#define STBI_ONLY_PNG
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include <stdbool.h>
 
 Arena g_arena = {};
@@ -36,8 +40,6 @@ void extract_4x4_block(const uint8_t* rgba, uint32_t width, uint32_t x, uint32_t
 //  - decompress the stream and check it's identical to the bc1 texture
 bool test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
 {
-    arena_reset(&g_arena);
-
     uint32_t bc1_size = (width * height) / 2;
     uint8_t* bc1_texture = arena_alloc(&g_arena, bc1_size);
 
@@ -68,7 +70,7 @@ bool test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
     {
         if (uncompressed_texture[i] != bc1_texture[i])
         {
-            fprintf(stdout, "failed\n");
+            fprintf(stdout, "failed, divergence at the %uth bytes\n", i);
             return false;
         }
     }
@@ -142,8 +144,9 @@ int main(void)
 {
     fprintf(stdout, "bc_crunch test suite\n\n");
 
+    // synthetic textures tests
+    fprintf(stdout, "synthetic textures tests\n");
     uint8_t* rgba = arena_alloc(&g_arena, TEXTURE_WIDTH * TEXTURE_HEIGHT * 4);
-
     uniform_texture(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0xef, 0x7d, 0x57);
     if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
         return -1;
@@ -155,6 +158,29 @@ int main(void)
     make_random((uint32_t*)rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT);
     if (!test_bc1(rgba, TEXTURE_WIDTH, TEXTURE_HEIGHT))
         return -1;
+
+    arena_reset(&g_arena);
+
+    // kodak photos
+    for(uint32_t i=1; i<25; ++i)
+    {
+        char filename[256];
+        snprintf(filename, 256, "../textures/kodim%02u.png", i);
+
+        fprintf(stdout, "\nopening %s ", filename);
+
+        int width, height, num_channels;
+        unsigned char *data = stbi_load(filename, &width, &height, &num_channels, 4);
+
+        fprintf(stdout, "width : %d height :%d num_channels :%d\n", width, height, num_channels);
+
+        arena_reset(&g_arena);
+
+        if (!test_bc1(data, width, height))
+            return -1;
+
+        stbi_image_free(data);
+    }
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);
