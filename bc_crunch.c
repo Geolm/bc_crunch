@@ -1,163 +1,229 @@
 #include <assert.h>
 #include "bc_crunch.h"
 
+#include <stdbool.h>
 #include <stdio.h> // NOT NEEDED
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
 //----------------------------------------------------------------------------------------------------------------------------
 
-//----------------------------------------------------------------------------------------------------------------------------
-#define TOP                 0x01000000u
-#define MAX_ALPHABET_SIZE   256
-#define LIMIT               ((MAX_ALPHABET_SIZE * 128 < (1 << 16)) ? (MAX_ALPHABET_SIZE * 128) : (1 << 16))
+#define AC__MinLength (0x01000000U)
+#define AC__MaxLength (0xFFFFFFFFU)
+#define MAX_ALPHABET_SIZE (256)
+#define DM__LengthShift (15)
+#define DM__MaxCount    (1 << DM__LengthShift)
 
-//----------------------------------------------------------------------------------------------------------------------------
-typedef struct
+typedef struct range_model
 {
-    uint16_t count[MAX_ALPHABET_SIZE];
-    uint32_t total;
-    uint32_t alphabet_size;
+    uint32_t distribution[MAX_ALPHABET_SIZE]; 
+    uint32_t symbol_count[MAX_ALPHABET_SIZE];
+    uint32_t total_count, update_cycle, symbols_until_update;
+    uint32_t data_symbols, last_symbol;
 } range_model;
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void model_init(range_model *m, uint32_t alphabet_size)
+//----------------------------------------------------------------------------------------------------------------------
+void adaptive_model_update(range_model* model)
 {
-    assert(alphabet_size <= MAX_ALPHABET_SIZE);
-    m->alphabet_size = alphabet_size;
-    for (uint32_t i = 0; i < alphabet_size; ++i)
-        m->count[i] = 1;
-    m->total = alphabet_size;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void model_rescale(range_model *m)
-{
-    m->total = 0;
-    for (uint32_t i = 0; i < m->alphabet_size; ++i)
+    if ((model->total_count += model->update_cycle) > DM__MaxCount) 
     {
-        m->count[i] = (m->count[i] + 1) >> 1;
-        m->total += m->count[i];
+        model->total_count = 0;
+        for (uint32_t n = 0; n < model->data_symbols; n++)
+            model->total_count += (model->symbol_count[n] = (model->symbol_count[n] + 1) >> 1);
     }
+
+    uint32_t k, sum = 0;
+    uint32_t scale = 0x80000000U / model->total_count;
+
+    for (k = 0; k < model->data_symbols; k++) 
+    {
+        model->distribution[k] = (scale * sum) >> (31 - DM__LengthShift);
+        sum += model->symbol_count[k];
+    }    
+
+    model->update_cycle = (5 * model->update_cycle) >> 2;
+    uint32_t max_cycle = (model->data_symbols + 6) << 3;
+    if (model->update_cycle > max_cycle) 
+        model->update_cycle = max_cycle;
+    model->symbols_until_update = model->update_cycle;
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void model_update(range_model *m, uint32_t sym)
+//----------------------------------------------------------------------------------------------------------------------
+void model_init(range_model* model, uint32_t number_of_symbols)
 {
-    assert(sym < m->alphabet_size);
-    m->count[sym]++;
-    m->total++;
-    if (m->total >= LIMIT)
-        model_rescale(m);
+    model->data_symbols = number_of_symbols;
+    model->last_symbol = model->data_symbols - 1;
+    model->total_count = 0;
+    model->update_cycle = model->data_symbols;
+
+    for (uint32_t k = 0; k < model->data_symbols; k++) 
+        model->symbol_count[k] = 1;
+
+    adaptive_model_update(model);
+    model->symbols_until_update = model->update_cycle = (model->data_symbols + 6) >> 1;
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void model_build(const range_model *m, uint32_t *freq)
+//----------------------------------------------------------------------------------------------------------------------
+typedef struct range_codec
 {
-    freq[0] = 0;
-    for (uint32_t i = 0; i < m->alphabet_size; ++i)
-        freq[i + 1] = freq[i] + m->count[i];
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-typedef struct
-{
-    uint32_t low, high, code;
-    uint8_t *start, *ptr, *end;
+    uint8_t *code_buffer, *ac_pointer;
+    uint32_t base, value, length;                     // arithmetic coding state
+    uint32_t buffer_size;
 } range_codec;
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void enc_init(range_codec *rc, uint8_t *out, size_t cap)
+//----------------------------------------------------------------------------------------------------------------------
+inline static void ac_propagate_carry(range_codec* codec)
 {
-    rc->low  = 0;
-    rc->high = 0xFFFFFFFFu;
-    rc->start = out;
-    rc->ptr  = out;
-    rc->end  = out + cap;
+    uint8_t * p;            
+    // carry propagation on compressed data buffer
+    for (p = codec->ac_pointer - 1; *p == 0xFFU; p--) 
+        *p = 0;
+    ++*p;
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-void enc_put(range_codec *rc, range_model *m, uint32_t sym)
+//----------------------------------------------------------------------------------------------------------------------
+inline static void ac_renorm_enc_interval(range_codec* codec)
 {
-    assert(sym < m->alphabet_size);
-
-    uint32_t freq[MAX_ALPHABET_SIZE + 1];
-    model_build(m, freq);
-    uint32_t total = m->total;
-
-    uint64_t range = (uint64_t)rc->high - rc->low + 1ull;
-    rc->high = rc->low + (uint32_t)((range * (uint64_t)freq[sym + 1]) / (uint64_t)total) - 1u;
-    rc->low  = rc->low + (uint32_t)((range * (uint64_t)freq[sym])     / (uint64_t)total);
-
-    while ((rc->high ^ rc->low) < TOP) 
+    do  // output and discard top byte
     {
-        if (rc->ptr >= rc->end)
-            return;
+        *codec->ac_pointer++ = (uint8_t)(codec->base >> 24);
+        codec->base <<= 8;
+    } while ((codec->length <<= 8) < AC__MinLength);        // length multiplied by 256
+}
 
-        *rc->ptr++ = (uint8_t)(rc->low >> 24);
-        rc->low <<= 8;
-        rc->high = (rc->high << 8) | 0xFFu;
+//----------------------------------------------------------------------------------------------------------------------
+inline static void ac_renorm_dec_interval(range_codec* codec)
+{
+    do // read least-significant byte
+    {
+        codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
+    } while ((codec->length <<= 8) < AC__MinLength);        // length multiplied by 256
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+void enc_init(range_codec* codec, uint8_t* output, uint32_t length)
+{
+    codec->buffer_size = length;
+    codec->code_buffer = output;
+    codec->base = 0;
+    codec->length = AC__MaxLength;
+    codec->ac_pointer = codec->code_buffer;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+void dec_init(range_codec* codec, const uint8_t* input, uint32_t length)
+{
+    codec->buffer_size = length;
+    codec->code_buffer = (uint8_t*) input;
+    codec->length = AC__MaxLength;
+    codec->ac_pointer = codec->code_buffer + 3;
+    codec->value = ((uint32_t)(codec->code_buffer[0]) << 24) |
+                   ((uint32_t)(codec->code_buffer[1]) << 16) |
+                   ((uint32_t)(codec->code_buffer[2]) <<  8) |
+                    (uint32_t)(codec->code_buffer[3]);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+uint32_t enc_done(range_codec* codec)
+{
+    uint32_t init_base = codec->base;            // done encoding: set final data bytes
+
+    if (codec->length > 2 * AC__MinLength) 
+    {
+        codec->base  += AC__MinLength;                                     // base offset
+        codec->length = AC__MinLength >> 1;             // set new length for 1 more byte
+    }
+    else 
+    {
+        codec->base  += AC__MinLength >> 1;                                // base offset
+        codec->length = AC__MinLength >> 9;            // set new length for 2 more bytes
     }
 
-    model_update(m, sym);
+    if (init_base > codec->base) 
+        ac_propagate_carry(codec);                 // overflow = carry
+
+    ac_renorm_enc_interval(codec);                // renormalization = output last bytes
+
+    uint32_t code_bytes = (uint32_t)(codec->ac_pointer - codec->code_buffer);
+    assert(code_bytes <= codec->buffer_size); // code buffer overflow
+
+    return code_bytes;                                   // number of bytes used
 }
 
-
-//----------------------------------------------------------------------------------------------------------------------------
-static inline size_t enc_done(range_codec *rc)
+//----------------------------------------------------------------------------------------------------------------------
+void enc_put(range_codec* codec, range_model* model, uint32_t data)
 {
-    for (uint32_t i = 0; i < 4; ++i)
-    {
-        if (rc->ptr >= rc->end)
-            break;
+    assert(data < model->data_symbols); // invalid data symbols
+    assert(model->distribution != NULL); // adaptive model should be initialized
+    
+    uint32_t x;
+    uint32_t init_base = codec->base;
 
-        *rc->ptr++ = rc->low >> 24;
-        rc->low <<= 8;
+    // compute products
+    if (data == model->last_symbol) 
+    {
+        x = model->distribution[data] * (codec->length >> DM__LengthShift);
+        codec->base   += x; // update interval
+        codec->length -= x; // no product needed
     }
-    return (size_t)(rc->ptr - rc->start);
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void dec_init(range_codec *rc, const uint8_t *in, size_t size)
-{
-    rc->low = 0;
-    rc->high = 0xFFFFFFFFu;
-    rc->ptr = (uint8_t*)in;
-    rc->end = (uint8_t*)in + size;
-    rc->code = 0;
-    for (uint32_t i = 0; i < 4; ++i)
-        rc->code = (rc->code << 8) | (rc->ptr < rc->end ? *rc->ptr++ : 0);
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-uint32_t dec_get(range_codec *rc, range_model *m)
-{
-    uint32_t freq[MAX_ALPHABET_SIZE + 1];
-    model_build(m, freq);
-    uint32_t total = m->total;
-
-    uint64_t range = (uint64_t)rc->high - rc->low + 1ull;
-    uint64_t tmp = (uint64_t)(rc->code - rc->low + 1u);
-    uint32_t scaled = (uint32_t)((tmp * (uint64_t)total - 1ull) / range);
-
-    uint32_t sym = 0;
-    while (freq[sym + 1] <= scaled)
-        ++sym;
-
-    rc->high = rc->low + (uint32_t)((range * (uint64_t)freq[sym + 1]) / (uint64_t)total) - 1u;
-    rc->low  = rc->low + (uint32_t)((range * (uint64_t)freq[sym])     / (uint64_t)total);
-
-    while ((rc->high ^ rc->low) < TOP)
+    else 
     {
-        rc->code = (rc->code << 8) | (rc->ptr < rc->end ? *rc->ptr++ : 0);
-        rc->low <<= 8;
-        rc->high = (rc->high << 8) | 0xFFu;
+        x = model->distribution[data] * (codec->length >>= DM__LengthShift);
+        codec->base   += x; // update interval
+        codec->length  = model->distribution[data+1] * codec->length - x;
     }
 
-    model_update(m, sym);
-    return sym;
+    if (init_base > codec->base) 
+        ac_propagate_carry(codec);                 // overflow = carry
+
+    if (codec->length < AC__MinLength) 
+        ac_renorm_enc_interval(codec);        // renormalization
+
+    ++model->symbol_count[data];
+    if (--model->symbols_until_update == 0)
+        adaptive_model_update(model);
 }
 
+//----------------------------------------------------------------------------------------------------------------------
+uint32_t dec_get(range_codec* codec, range_model* model)
+{
+    assert(model->distribution != NULL); // adaptive model should be initialized
+
+    uint32_t n, s, x, y = codec->length;
+
+    // decode using only multiplications
+    x = s = 0;
+    codec->length >>= DM__LengthShift;
+    uint32_t m = (n = model->data_symbols) >> 1;
+
+    // decode via bisection search
+    do 
+    {
+        uint32_t z = codec->length * model->distribution[m];
+        if (z > codec->value) 
+        {
+            n = m;
+            y = z;
+        }
+        else 
+        {
+            s = m;
+            x = z;
+        }
+    } while ((m = (s + n) >> 1) != s);
+
+    codec->value -= x;
+    codec->length = y - x;
+
+    if (codec->length < AC__MinLength) 
+        ac_renorm_dec_interval(codec);
+
+    ++model->symbol_count[s];
+    if (--model->symbols_until_update == 0) 
+        adaptive_model_update(model);
+
+    return s;
+}
 
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct bc1_block
