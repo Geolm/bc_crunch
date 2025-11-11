@@ -445,7 +445,7 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
     range_model table_index, table_difference, block_mode;
     model_init(&table_index, top_table_size);
     model_init(&table_difference, 256);
-    model_init(&block_mode, 4);
+    model_init(&block_mode, 2);
 
     bc1_block empty_block = {0};
     bc1_block* previous = &empty_block;
@@ -482,24 +482,9 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
             {
                 enc_put(&codec, &block_mode, 0);
             }
-            else if (hamming == 1)
-            {
-                enc_put(&codec, &block_mode, 1);
-                enc_put_bits(&codec, 31 - __builtin_clz(difference), 5);
-            }
-            else if (hamming == 2)
-            {
-                enc_put(&codec, &block_mode, 2);
-
-                uint32_t bit_index = 31 - __builtin_clz(difference);
-                enc_put_bits(&codec, bit_index, 5);
-                difference &= ~(1<<bit_index);
-                bit_index = 31 - __builtin_clz(difference);
-                enc_put_bits(&codec, bit_index, 5);
-            }
             else
             {
-                enc_put(&codec, &block_mode, 3);
+                enc_put(&codec, &block_mode, 1);
 
                 // encode the full 32 bits difference
                 for(uint32_t j=0; j<4; ++j)
@@ -545,7 +530,7 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     range_model table_index, table_difference, block_mode;
     model_init(&table_index, top_table_size);
     model_init(&table_difference, 256);
-    model_init(&block_mode, 4);
+    model_init(&block_mode, 2);
 
     bc1_block empty_block = {0};
     bc1_block* blocks = (bc1_block*)output;
@@ -577,31 +562,17 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             uint32_t reference = dec_get(&codec, &table_index);
             uint32_t mode = dec_get(&codec, &block_mode);
 
-            switch(mode)
+            if (mode == 0)
+                current->indices = top_table[reference].key;
+            else
             {
-            case 0 : current->indices = top_table[reference].key; break;
-            case 1 : 
-                {
-                    current->indices = top_table[reference].key;
-                    current->indices ^= (1 << dec_get_bits(&codec, 5));
-                    break;
-                }
-            case 2 : 
-                {
-                    current->indices = top_table[reference].key;
-                    current->indices ^= (1 << dec_get_bits(&codec, 5));
-                    current->indices ^= (1 << dec_get_bits(&codec, 5));
-                    break;
-                }
-            case 3 :
-                {
-                    uint32_t difference=0;
-                    for(uint32_t j=0; j<4; ++j)
-                        difference = difference | (dec_get(&codec, &table_difference) << (j*8));
+                uint32_t difference=0;
+                for(uint32_t j=0; j<4; ++j)
+                    difference = difference | (dec_get(&codec, &table_difference) << (j*8));
 
-                    current->indices =  difference ^ top_table[reference].key;
-                }
+                current->indices =  difference ^ top_table[reference].key;
             }
+            
             previous = current;
         }
     }
