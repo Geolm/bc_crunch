@@ -11,8 +11,12 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG -Wall -Wextra ")
-set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -Wextra")
+if(MSVC)
+    set(CMAKE_C_FLAGS_DEBUG "/W3 /Zi")
+else()
+    set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG -Wall -Wextra ")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -Wextra")
+endif()
 
 add_executable(test
     ./test/test.c
