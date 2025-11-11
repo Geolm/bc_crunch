@@ -14,7 +14,6 @@
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
-#define EMPTY_KEY  0xFFFFFFFFu
 #define TABLE_INDEX_NUM_BITS (8)
 #define TABLE_SIZE (1<<TABLE_INDEX_NUM_BITS)
 #define RED_NUM_BITS (6)
@@ -183,6 +182,21 @@ void enc_put(range_codec* codec, range_model* model, uint32_t data)
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+static inline void enc_put_bits(range_codec* codec, uint32_t data, uint32_t number_of_bits)
+{
+    assert(data < MAX_ALPHABET_SIZE);
+
+    uint32_t init_base = codec->base;
+    codec->base += data * (codec->length >>= number_of_bits);            // new interval base and length
+
+    if (init_base > codec->base) 
+        propagate_carry(codec);
+
+    if (codec->length < AC__MinLength) 
+        renorm_enc_interval(codec);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 uint32_t dec_get(range_codec* codec, range_model* model)
 {
     assert(model->distribution != NULL); // adaptive model should be initialized
@@ -224,6 +238,22 @@ uint32_t dec_get(range_codec* codec, range_model* model)
     ++model->symbol_count[s];
     if (--model->symbols_until_update == 0) 
         adaptive_model_update(model);
+
+    return s;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+uint32_t dec_get_bits(range_codec* codec, uint32_t number_of_bits)
+{
+    unsigned s = codec->value / (codec->length >>= number_of_bits);      
+    codec->value -= codec->length * s;
+    if (codec->length < AC__MinLength)
+    {
+        do
+        {
+            codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
+        } while ((codec->length <<= 8) < AC__MinLength);
+    }
 
     return s;
 }
@@ -289,7 +319,7 @@ void build_top_table(const bc1_block* blocks, uint32_t num_blocks, entry* output
 {
     // clear the hashmap
     for(uint32_t i=0; i<HASHMAP_SIZE; ++i)
-        hashmap[i].key = EMPTY_KEY;
+        hashmap[i].count = 0;
 
     // insert all blocks indices in the hashmap
     for(uint32_t i=0; i<num_blocks; ++i)
@@ -302,7 +332,7 @@ void build_top_table(const bc1_block* blocks, uint32_t num_blocks, entry* output
         bool inserted = false;
         while (!inserted)
         {
-            if (hashmap[index].key == EMPTY_KEY)
+            if (hashmap[index].count == 0)
             {
                 hashmap[index].key = b->indices;
                 hashmap[index].count = 1;
@@ -318,9 +348,8 @@ void build_top_table(const bc1_block* blocks, uint32_t num_blocks, entry* output
         }
     }
 
-    entry table[TABLE_SIZE];
-
     // clear the table
+    entry table[TABLE_SIZE];
     for(uint32_t i=0; i<TABLE_SIZE; ++i)
         table[i].count = 0;
 
@@ -362,6 +391,24 @@ void build_top_table(const bc1_block* blocks, uint32_t num_blocks, entry* output
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size, uint32_t original_indices)
+{
+    uint32_t best_score = 32;
+    uint32_t best_index = 0;
+    for(uint32_t i=0; i<table_size; ++i)
+    {
+        uint32_t xor_value = table[i].key ^ original_indices;
+        uint32_t score = __builtin_popcount(xor_value);
+        if (score < best_score)
+        {
+            best_score = score;
+            best_index = i;
+        }
+    }
+    return best_index;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 // Public functions
 //----------------------------------------------------------------------------------------------------------------------------
 
@@ -373,16 +420,19 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
 
+    range_codec codec;
+    enc_init(&codec, (uint8_t*) output, length);
+
     // build a histogram and select the TABLE_SIZE block indices which are most used
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size;
     build_top_table(blocks, height_blocks*width_blocks, top_table, &top_table_size);
 
-    printf("histogram has %u entries\n", top_table_size);
-
-
-    range_codec codec;
-    enc_init(&codec, (uint8_t*) output, length);
+    // write the table (no compression for now)
+    enc_put_bits(&codec, top_table_size-1, TABLE_INDEX_NUM_BITS);
+    for(uint32_t i=0; i<top_table_size; ++i)
+        for(uint32_t j=0; j<4; ++j)
+            enc_put_bits(&codec, (top_table[i].key >> (j*8)) & 0xff, 8);
 
     range_model red[2], green[2], blue[2];
     for(uint32_t i=0; i<2; ++i)
@@ -392,9 +442,11 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
         model_init(&blue[i],  1 << BLUE_NUM_BITS);
     }
 
-    range_model rows[4];
-    for(uint32_t i=0; i<4; ++i)
-        model_init(&rows[i], 1<<BC1_ROW_INDICES_NUM_BITS);
+    range_model table_index;
+    model_init(&table_index, top_table_size);
+
+    range_model table_difference;
+    model_init(&table_difference, 256);
 
     bc1_block empty_block = {0};
     bc1_block* previous = &empty_block;
@@ -403,9 +455,8 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
-            // zig-zag pattern
+            // zig-zag pattern delta compression for colors
             bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
-
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t current_red, current_green, current_blue;
@@ -419,8 +470,17 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
                 enc_put(&codec, &blue[j], delta_encode(previous_blue, current_blue, BLUE_NUM_BITS));
             }
 
-            // for(uint32_t j=0; j<4; ++j)
-            //     enc_put(&codec, &rows[j], current->indices[j] ^ previous->indices[j]);
+            // for indices, we store the reference to "nearest" indices (can be exactly the same)
+            // and the delta with this reference
+            uint32_t reference = top_table_nearest(top_table, top_table_size, current->indices);
+            enc_put(&codec, &table_index, reference);
+
+            // xor the difference and encode (could be 0 if equal to reference)
+            uint32_t difference = current->indices ^ top_table[reference].key;
+
+            // encode difference
+            for(uint32_t j=0; j<4; ++j)
+                enc_put(&codec, &table_difference, (difference>>(j*8))&0xff);
 
             previous = current;
         }
@@ -448,9 +508,21 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
         model_init(&blue[i],  1 << BLUE_NUM_BITS);
     }
 
-    range_model rows[4];
-    for (uint32_t i = 0; i < 4; ++i)
-        model_init(&rows[i], 1 << BC1_ROW_INDICES_NUM_BITS);
+    entry top_table[TABLE_SIZE];
+    uint32_t top_table_size = dec_get_bits(&codec, TABLE_INDEX_NUM_BITS)+1;
+
+    for(uint32_t i=0; i<top_table_size; ++i)
+    {
+        top_table[i].key = 0;
+        for(uint32_t j=0; j<4; ++j)
+            top_table[i].key |= dec_get_bits(&codec, 8) << (j*8);
+    }
+
+    range_model table_index;
+    model_init(&table_index, top_table_size);
+
+    range_model table_difference;
+    model_init(&table_difference, 256);
 
     bc1_block empty_block = {0};
     bc1_block* blocks = (bc1_block*)output;
@@ -460,9 +532,8 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
-            // zig-zag pattern
+            // zig-zag pattern color
             bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
-
             for (uint32_t j = 0; j < 2; ++j)
             {
                 uint8_t previous_red, previous_green, previous_blue;
@@ -479,11 +550,13 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
                 current->color[j] = bc1_pack_565(current_red, current_green, current_blue);
             }
 
-            // for (uint32_t j = 0; j < 4; ++j)
-            // {
-            //     uint8_t delta = (uint8_t)dec_get(&codec, &rows[j]);
-            //     current->indices[j] = previous->indices[j] ^ delta;
-            // }
+            // indices difference with top table
+            uint32_t reference = dec_get(&codec, &table_index);
+            uint32_t difference=0;
+            for(uint32_t j=0; j<4; ++j)
+                difference = difference | (dec_get(&codec, &table_difference) << (j*8));
+
+            current->indices =  difference ^ top_table[reference].key;
 
             previous = current;
         }
