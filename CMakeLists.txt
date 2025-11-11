@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 project(bc_crunch)
 
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test m)
+endif()
+
 if(CMAKE_GENERATOR STREQUAL "Xcode")
     set(CMAKE_MACOSX_BUNDLE TRUE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0")
