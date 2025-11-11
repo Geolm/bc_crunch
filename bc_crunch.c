@@ -476,12 +476,9 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
 
             // xor the difference and encode (could be 0 if equal to reference)
             uint32_t difference = current->indices ^ top_table[reference].key;
-            uint32_t hamming = __builtin_popcount(difference);
-            
-            if (hamming == 0)
-            {
+
+            if (difference == 0)
                 enc_put(&codec, &block_mode, 0);
-            }
             else
             {
                 enc_put(&codec, &block_mode, 1);
@@ -569,10 +566,8 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
                 uint32_t difference=0;
                 for(uint32_t j=0; j<4; ++j)
                     difference = difference | (dec_get(&codec, &table_difference) << (j*8));
-
                 current->indices =  difference ^ top_table[reference].key;
             }
-            
             previous = current;
         }
     }
