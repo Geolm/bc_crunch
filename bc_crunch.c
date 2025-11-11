@@ -13,6 +13,14 @@
 #define MAX_ALPHABET_SIZE (256)
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
+#define HASHMAP_SIZE (1 << 20)
+#define EMPTY_KEY  0xFFFFFFFFu
+#define TABLE_INDEX_NUM_BITS (8)
+#define TABLE_SIZE (1<<TABLE_INDEX_NUM_BITS)
+#define RED_NUM_BITS (6)
+#define GREEN_NUM_BITS (7)
+#define BLUE_NUM_BITS (6)
+#define BC1_ROW_INDICES_NUM_BITS (8)
 
 typedef struct range_model
 {
@@ -72,7 +80,7 @@ typedef struct range_codec
 } range_codec;
 
 //----------------------------------------------------------------------------------------------------------------------
-inline static void ac_propagate_carry(range_codec* codec)
+inline static void propagate_carry(range_codec* codec)
 {
     uint8_t * p;            
     // carry propagation on compressed data buffer
@@ -82,21 +90,12 @@ inline static void ac_propagate_carry(range_codec* codec)
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-inline static void ac_renorm_enc_interval(range_codec* codec)
+inline static void renorm_enc_interval(range_codec* codec)
 {
     do  // output and discard top byte
     {
         *codec->ac_pointer++ = (uint8_t)(codec->base >> 24);
         codec->base <<= 8;
-    } while ((codec->length <<= 8) < AC__MinLength);        // length multiplied by 256
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-inline static void ac_renorm_dec_interval(range_codec* codec)
-{
-    do // read least-significant byte
-    {
-        codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
     } while ((codec->length <<= 8) < AC__MinLength);        // length multiplied by 256
 }
 
@@ -140,9 +139,9 @@ uint32_t enc_done(range_codec* codec)
     }
 
     if (init_base > codec->base) 
-        ac_propagate_carry(codec);                 // overflow = carry
+        propagate_carry(codec);                 // overflow = carry
 
-    ac_renorm_enc_interval(codec);                // renormalization = output last bytes
+    renorm_enc_interval(codec);                // renormalization = output last bytes
 
     uint32_t code_bytes = (uint32_t)(codec->ac_pointer - codec->code_buffer);
     assert(code_bytes <= codec->buffer_size); // code buffer overflow
@@ -159,25 +158,24 @@ void enc_put(range_codec* codec, range_model* model, uint32_t data)
     uint32_t x;
     uint32_t init_base = codec->base;
 
-    // compute products
     if (data == model->last_symbol) 
     {
         x = model->distribution[data] * (codec->length >> DM__LengthShift);
-        codec->base   += x; // update interval
-        codec->length -= x; // no product needed
+        codec->base += x;
+        codec->length -= x;
     }
     else 
     {
         x = model->distribution[data] * (codec->length >>= DM__LengthShift);
-        codec->base   += x; // update interval
+        codec->base += x;
         codec->length  = model->distribution[data+1] * codec->length - x;
     }
 
     if (init_base > codec->base) 
-        ac_propagate_carry(codec);                 // overflow = carry
+        propagate_carry(codec);
 
     if (codec->length < AC__MinLength) 
-        ac_renorm_enc_interval(codec);        // renormalization
+        renorm_enc_interval(codec);
 
     ++model->symbol_count[data];
     if (--model->symbols_until_update == 0)
@@ -215,8 +213,13 @@ uint32_t dec_get(range_codec* codec, range_model* model)
     codec->value -= x;
     codec->length = y - x;
 
-    if (codec->length < AC__MinLength) 
-        ac_renorm_dec_interval(codec);
+    if (codec->length < AC__MinLength)
+    {
+        do
+        {
+            codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
+        } while ((codec->length <<= 8) < AC__MinLength);
+    }
 
     ++model->symbol_count[s];
     if (--model->symbols_until_update == 0) 
@@ -229,7 +232,7 @@ uint32_t dec_get(range_codec* codec, range_model* model)
 typedef struct bc1_block
 {
     uint16_t color[2];
-    uint8_t indices[4];
+    uint32_t indices;
 } bc1_block;
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -261,10 +264,102 @@ static inline uint16_t bc1_pack_565(uint8_t r5, uint8_t g6, uint8_t b5)
     return (uint16_t)(((uint16_t)r5 << 11) | ((uint16_t)g6 << 5) | (uint16_t)b5);
 }
 
-#define RED_NUM_BITS (6)
-#define GREEN_NUM_BITS (7)
-#define BLUE_NUM_BITS (6)
-#define BC1_ROW_INDICES_NUM_BITS (8)
+//----------------------------------------------------------------------------------------------------------------------------
+typedef struct entry
+{
+    uint32_t key;
+    uint32_t count;
+} entry;
+
+static entry hashmap[HASHMAP_SIZE];
+
+//----------------------------------------------------------------------------------------------------------------------------
+static inline uint32_t hash32(uint32_t x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    x *= 0x846ca68b;
+    x ^= x >> 16;
+    return x;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void build_top_table(const bc1_block* blocks, uint32_t num_blocks, entry* output, uint32_t* num_entries)
+{
+    // clear the hashmap
+    for(uint32_t i=0; i<HASHMAP_SIZE; ++i)
+        hashmap[i].key = EMPTY_KEY;
+
+    // insert all blocks indices in the hashmap
+    for(uint32_t i=0; i<num_blocks; ++i)
+    {
+        const bc1_block* b = &blocks[i];
+
+        uint32_t h = hash32(b->indices);
+        uint32_t index = h & (HASHMAP_SIZE - 1);
+
+        bool inserted = false;
+        while (!inserted)
+        {
+            if (hashmap[index].key == EMPTY_KEY)
+            {
+                hashmap[index].key = b->indices;
+                hashmap[index].count = 1;
+                inserted = true;
+            }
+            else if (hashmap[index].key == b->indices)
+            {
+                hashmap[index].count++;
+                inserted = true;
+            }
+            else
+                index = (index + 1) & (HASHMAP_SIZE - 1); // linear probe
+        }
+    }
+
+    entry table[TABLE_SIZE];
+
+    // clear the table
+    for(uint32_t i=0; i<TABLE_SIZE; ++i)
+        table[i].count = 0;
+
+    // fill the table with top most used indices
+    for (uint32_t i = 0; i<HASHMAP_SIZE; ++i)
+    {
+        uint32_t c = hashmap[i].count;
+        if (c == 0) 
+            continue;
+
+        // if smaller than current min, skip
+        if (c <= table[0].count)
+            continue;
+
+        // replace min
+        table[0] = hashmap[i];
+
+        // bubble new smallest to front
+        for (uint32_t j = 1; j < TABLE_SIZE; j++)
+        {
+            if (table[j-1].count > table[j].count)
+            {
+                entry tmp = table[j - 1];
+                table[j-1] = table[j];
+                table[j] = tmp;
+            }
+            else break;
+        }
+    }
+    
+    // reverse the table for output and count
+    *num_entries = 0;
+    for(uint32_t i=0; i<TABLE_SIZE; ++i)
+    {
+        output[i] = table[TABLE_SIZE - i - 1];
+        if (output[i].count>0)
+            (*num_entries)++;
+    }
+}
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Public functions
@@ -274,8 +369,17 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
 {
     assert((width%4 == 0) && (height%4 == 0));
 
+    bc1_block* blocks = (bc1_block*) input;
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
+
+    // build a histogram and select the TABLE_SIZE block indices which are most used
+    entry top_table[TABLE_SIZE];
+    uint32_t top_table_size;
+    build_top_table(blocks, height_blocks*width_blocks, top_table, &top_table_size);
+
+    printf("histogram has %u entries\n", top_table_size);
+
 
     range_codec codec;
     enc_init(&codec, (uint8_t*) output, length);
@@ -293,13 +397,13 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
         model_init(&rows[i], 1<<BC1_ROW_INDICES_NUM_BITS);
 
     bc1_block empty_block = {0};
-    bc1_block* blocks = (bc1_block*) input;
     bc1_block* previous = &empty_block;
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
+            // zig-zag pattern
             bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
 
             for(uint32_t j=0; j<2; ++j)
@@ -315,8 +419,8 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
                 enc_put(&codec, &blue[j], delta_encode(previous_blue, current_blue, BLUE_NUM_BITS));
             }
 
-            for(uint32_t j=0; j<4; ++j)
-                enc_put(&codec, &rows[j], current->indices[j] ^ previous->indices[j]);
+            // for(uint32_t j=0; j<4; ++j)
+            //     enc_put(&codec, &rows[j], current->indices[j] ^ previous->indices[j]);
 
             previous = current;
         }
@@ -356,6 +460,7 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
+            // zig-zag pattern
             bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
 
             for (uint32_t j = 0; j < 2; ++j)
@@ -374,11 +479,11 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
                 current->color[j] = bc1_pack_565(current_red, current_green, current_blue);
             }
 
-            for (uint32_t j = 0; j < 4; ++j)
-            {
-                uint8_t delta = (uint8_t)dec_get(&codec, &rows[j]);
-                current->indices[j] = previous->indices[j] ^ delta;
-            }
+            // for (uint32_t j = 0; j < 4; ++j)
+            // {
+            //     uint8_t delta = (uint8_t)dec_get(&codec, &rows[j]);
+            //     current->indices[j] = previous->indices[j] ^ delta;
+            // }
 
             previous = current;
         }
