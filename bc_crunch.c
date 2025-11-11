@@ -408,6 +408,8 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
     return best_index;
 }
 
+static inline int abs(int a) {return (a>=0) ? a : -a;}
+
 //----------------------------------------------------------------------------------------------------------------------------
 // Public functions
 //----------------------------------------------------------------------------------------------------------------------------
@@ -442,10 +444,11 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
         model_init(&blue[i],  1 << BLUE_NUM_BITS);
     }
 
-    range_model table_index, table_difference, block_mode;
+    range_model table_index, table_difference, block_mode, color_reference;
     model_init(&table_index, top_table_size);
     model_init(&table_difference, 256);
     model_init(&block_mode, 2);
+    model_init(&color_reference, 2);
 
     bc1_block empty_block = {0};
     bc1_block* previous = &empty_block;
@@ -456,6 +459,7 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
         {
             // zig-zag pattern delta compression for colors
             bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
+            bc1_block* up = (y>0) ? current - width_blocks : NULL;
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t current_red, current_green, current_blue;
@@ -463,6 +467,25 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
 
                 bc1_extract_565(current->color[j], &current_red, &current_green, &current_blue);
                 bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
+
+                if (y>0)
+                {
+                    uint8_t up_red, up_green, up_blue;
+                    bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
+
+                    int previous_delta = abs(current_red - previous_red) + abs(current_green-previous_green) + abs(current_blue-previous_blue);
+                    int up_delta = abs(current_red-up_red) + abs(current_green-up_green) + abs(current_blue-up_blue);
+
+                    enc_put(&codec, &color_reference, (up_delta < previous_delta) ? 1 : 0);
+
+                    // overwrite previous value to avoid using a new set of variables
+                    if (up_delta < previous_delta)
+                    {
+                        previous_red = up_red;
+                        previous_green = up_green;
+                        previous_blue = up_blue;
+                    }
+                }
 
                 enc_put(&codec, &red[j], delta_encode(previous_red, current_red, RED_NUM_BITS));
                 enc_put(&codec, &green[j], delta_encode(previous_green, current_green, GREEN_NUM_BITS));
@@ -524,10 +547,11 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             top_table[i].key |= dec_get_bits(&codec, 8) << (j*8);
     }
 
-    range_model table_index, table_difference, block_mode;
+    range_model table_index, table_difference, block_mode, color_reference;
     model_init(&table_index, top_table_size);
     model_init(&table_difference, 256);
     model_init(&block_mode, 2);
+    model_init(&color_reference, 2);
 
     bc1_block empty_block = {0};
     bc1_block* blocks = (bc1_block*)output;
@@ -539,18 +563,26 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
         {
             // zig-zag pattern color
             bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
+            bc1_block* up = (y>0) ? current - width_blocks : NULL;
             for (uint32_t j = 0; j < 2; ++j)
             {
-                uint8_t previous_red, previous_green, previous_blue;
-                bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
-
+                bool reference_is_up = false;
+                if (y>0)
+                    reference_is_up = (dec_get(&codec, &color_reference) == 1);
+                
+                uint8_t reference_red, reference_green, reference_blue;
+                if (reference_is_up)
+                    bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
+                else
+                    bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
+                
                 uint8_t delta_red = (uint8_t)dec_get(&codec, &red[j]);
                 uint8_t delta_green = (uint8_t)dec_get(&codec, &green[j]);
                 uint8_t delta_blue = (uint8_t)dec_get(&codec, &blue[j]);
 
-                uint8_t current_red = delta_decode(previous_red, delta_red, RED_NUM_BITS);
-                uint8_t current_green = delta_decode(previous_green, delta_green, GREEN_NUM_BITS);
-                uint8_t current_blue = delta_decode(previous_blue, delta_blue, BLUE_NUM_BITS);
+                uint8_t current_red = delta_decode(reference_red, delta_red, RED_NUM_BITS);
+                uint8_t current_green = delta_decode(reference_green, delta_green, GREEN_NUM_BITS);
+                uint8_t current_blue = delta_decode(reference_blue, delta_blue, BLUE_NUM_BITS);
 
                 current->color[j] = bc1_pack_565(current_red, current_green, current_blue);
             }

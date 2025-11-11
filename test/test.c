@@ -203,7 +203,7 @@ int main(void)
 
     test_multiple("../textures/Brick_%02d-512x512.png", 10, 14);
 
-    fprintf(stdout, "\nglobal ratio : %f\n", global_ratio / (float) num_ratios);
+    fprintf(stdout, "\average ratio : %f\n", global_ratio / (float) num_ratios);
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);

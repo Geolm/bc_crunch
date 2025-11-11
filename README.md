@@ -10,6 +10,7 @@ tiny dependency-free lossless compressor for BCn texture streams (C99, ~500 LoC)
 * 1.374127 with histogram
 * 1.376662 block mode (0, 1, 2, n)
 * 1.379728 block mode (0, 1)
+* 1.483783 selecting color reference from up or left
 
 
 
