@@ -140,8 +140,9 @@ void make_random(uint32_t* p, uint32_t w, uint32_t h)
 }
 
 //-----------------------------------------------------------------------------------------------------------------------------
-void test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
+bool test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
 {
+    bool success = true;
     for(uint32_t i=range_min; i<=range_max; ++i)
     {
         char filename[256];
@@ -162,9 +163,12 @@ void test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
             global_ratio += ratio;
             num_ratios++;
         }
+        else 
+            success = false;
 
         stbi_image_free(data);
     }
+    return success;
 }
 
 #define TEXTURE_WIDTH (512)
@@ -193,17 +197,22 @@ int main(void)
     arena_reset(&g_arena);
 
     // kodak photos
-    test_multiple("../textures/kodim%02u.png", 1, 5);
+    if (!test_multiple("../textures/kodim%02u.png", 1, 5))
+        return -1;
 
-    test_multiple("../textures/Elements_%02u-512x512.png", 1, 6);
+    if (!test_multiple("../textures/Elements_%02u-512x512.png", 1, 6))
+        return -1;
 
-    test_multiple("../textures/Dirt_%02u-512x512.png", 12, 17);
+    if (!test_multiple("../textures/Dirt_%02u-512x512.png", 12, 17))
+        return -1;
 
-    test_multiple("../textures/Wood_%02u-512x512.png", 4, 7);
+    if (!test_multiple("../textures/Wood_%02u-512x512.png", 4, 7))
+        return -1;
 
-    test_multiple("../textures/Brick_%02d-512x512.png", 10, 14);
+    if (!test_multiple("../textures/Brick_%02d-512x512.png", 10, 14))
+        return -1;
 
-    fprintf(stdout, "\average ratio : %f\n", global_ratio / (float) num_ratios);
+    fprintf(stdout, "average ratio : %f\n", global_ratio / (float) num_ratios);
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);
