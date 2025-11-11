@@ -21,6 +21,14 @@
 #define BLUE_NUM_BITS (6)
 #define BC1_ROW_INDICES_NUM_BITS (8)
 
+#if defined(_MSC_VER)
+    #include <intrin.h>
+    #pragma intrinsic(__popcnt)
+    #define popcount(x) __popcnt(x)
+#else
+    #define popcount(x) __builtin_popcount(x)
+#endif
+
 typedef struct range_model
 {
     uint32_t distribution[MAX_ALPHABET_SIZE]; 
@@ -398,7 +406,7 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
     for(uint32_t i=0; i<table_size; ++i)
     {
         uint32_t xor_value = table[i].key ^ original_indices;
-        uint32_t score = __builtin_popcount(xor_value);
+        uint32_t score = popcount(xor_value);
         if (score < best_score)
         {
             best_score = score;
