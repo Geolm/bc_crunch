@@ -62,5 +62,5 @@ jobs:
       run: cmake -S . -B build
 
     - name: Build
-      working-directory: ${{github.workspace}}\tests
+      working-directory: ${{github.workspace}}
       run: cmake --build ${{github.workspace}}/build
