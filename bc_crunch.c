@@ -431,7 +431,7 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
     uint32_t width_blocks = width/4;
 
     range_codec codec;
-    enc_init(&codec, (uint8_t*) output, length);
+    enc_init(&codec, (uint8_t*) output, (uint32_t)length);
 
     // build a histogram and select the TABLE_SIZE block indices which are most used
     entry top_table[TABLE_SIZE];
@@ -535,7 +535,7 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     uint32_t width_blocks = width/4;
 
     range_codec codec;
-    dec_init(&codec, (const uint8_t*)input, length);
+    dec_init(&codec, (const uint8_t*)input, (uint32_t)length);
 
     range_model red[2], green[2], blue[2];
     for (uint32_t i = 0; i < 2; ++i)
