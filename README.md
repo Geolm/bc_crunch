@@ -12,6 +12,7 @@ tiny dependency-free lossless compressor for BCn texture streams (C99, ~500 LoC)
 * 1.379728 block mode (0, 1)
 * 1.483783 selecting color reference from up or left
 * 1.487026 only one set of models for color
+* 1.491485 top table sorted and compressed
 
 
 

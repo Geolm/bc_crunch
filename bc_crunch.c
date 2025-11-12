@@ -2,14 +2,15 @@
 #include "bc_crunch.h"
 
 #include <stdbool.h>
-#include <stdio.h> // NOT NEEDED
+#include <stdlib.h>
+
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
 //----------------------------------------------------------------------------------------------------------------------------
 
-#define AC__MinLength (0x01000000U)
-#define AC__MaxLength (0xFFFFFFFFU)
+#define RC__MinLength (0x01000000U)
+#define RC__MaxLength (0xFFFFFFFFU)
 #define MAX_ALPHABET_SIZE (256)
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
@@ -29,6 +30,7 @@
     #define popcount(x) __builtin_popcount(x)
 #endif
 
+//----------------------------------------------------------------------------------------------------------------------
 typedef struct range_model
 {
     uint32_t distribution[MAX_ALPHABET_SIZE]; 
@@ -36,6 +38,9 @@ typedef struct range_model
     uint32_t total_count, update_cycle, symbols_until_update;
     uint32_t data_symbols, last_symbol;
 } range_model;
+
+//----------------------------------------------------------------------------------------------------------------------
+static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
 //----------------------------------------------------------------------------------------------------------------------
 void adaptive_model_update(range_model* model)
@@ -103,7 +108,7 @@ inline static void renorm_enc_interval(range_codec* codec)
     {
         *codec->ac_pointer++ = (uint8_t)(codec->base >> 24);
         codec->base <<= 8;
-    } while ((codec->length <<= 8) < AC__MinLength);        // length multiplied by 256
+    } while ((codec->length <<= 8) < RC__MinLength);        // length multiplied by 256
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -112,7 +117,7 @@ void enc_init(range_codec* codec, uint8_t* output, uint32_t length)
     codec->buffer_size = length;
     codec->code_buffer = output;
     codec->base = 0;
-    codec->length = AC__MaxLength;
+    codec->length = RC__MaxLength;
     codec->ac_pointer = codec->code_buffer;
 }
 
@@ -121,7 +126,7 @@ void dec_init(range_codec* codec, const uint8_t* input, uint32_t length)
 {
     codec->buffer_size = length;
     codec->code_buffer = (uint8_t*) input;
-    codec->length = AC__MaxLength;
+    codec->length = RC__MaxLength;
     codec->ac_pointer = codec->code_buffer + 3;
     codec->value = ((uint32_t)(codec->code_buffer[0]) << 24) |
                    ((uint32_t)(codec->code_buffer[1]) << 16) |
@@ -134,15 +139,15 @@ uint32_t enc_done(range_codec* codec)
 {
     uint32_t init_base = codec->base;            // done encoding: set final data bytes
 
-    if (codec->length > 2 * AC__MinLength) 
+    if (codec->length > 2 * RC__MinLength) 
     {
-        codec->base  += AC__MinLength;                                     // base offset
-        codec->length = AC__MinLength >> 1;             // set new length for 1 more byte
+        codec->base  += RC__MinLength;                                     // base offset
+        codec->length = RC__MinLength >> 1;             // set new length for 1 more byte
     }
     else 
     {
-        codec->base  += AC__MinLength >> 1;                                // base offset
-        codec->length = AC__MinLength >> 9;            // set new length for 2 more bytes
+        codec->base  += RC__MinLength >> 1;                                // base offset
+        codec->length = RC__MinLength >> 9;            // set new length for 2 more bytes
     }
 
     if (init_base > codec->base) 
@@ -181,7 +186,7 @@ void enc_put(range_codec* codec, range_model* model, uint32_t data)
     if (init_base > codec->base) 
         propagate_carry(codec);
 
-    if (codec->length < AC__MinLength) 
+    if (codec->length < RC__MinLength) 
         renorm_enc_interval(codec);
 
     ++model->symbol_count[data];
@@ -200,7 +205,7 @@ static inline void enc_put_bits(range_codec* codec, uint32_t data, uint32_t numb
     if (init_base > codec->base) 
         propagate_carry(codec);
 
-    if (codec->length < AC__MinLength) 
+    if (codec->length < RC__MinLength) 
         renorm_enc_interval(codec);
 }
 
@@ -235,12 +240,12 @@ uint32_t dec_get(range_codec* codec, range_model* model)
     codec->value -= x;
     codec->length = y - x;
 
-    if (codec->length < AC__MinLength)
+    if (codec->length < RC__MinLength)
     {
         do
         {
             codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
-        } while ((codec->length <<= 8) < AC__MinLength);
+        } while ((codec->length <<= 8) < RC__MinLength);
     }
 
     ++model->symbol_count[s];
@@ -255,12 +260,12 @@ uint32_t dec_get_bits(range_codec* codec, uint32_t number_of_bits)
 {
     unsigned s = codec->value / (codec->length >>= number_of_bits);      
     codec->value -= codec->length * s;
-    if (codec->length < AC__MinLength)
+    if (codec->length < RC__MinLength)
     {
         do
         {
             codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
-        } while ((codec->length <<= 8) < AC__MinLength);
+        } while ((codec->length <<= 8) < RC__MinLength);
     }
 
     return s;
@@ -412,7 +417,8 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
             return i;
 
         uint32_t score = popcount(delta);
-        if (score < best_score)
+        if (score < best_score ||
+           ((score == best_score) && (table[i].key > table[best_index].key)))
         {
             best_score = score;
             best_index = i;
@@ -421,7 +427,26 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
     return best_index;
 }
 
-static inline int abs(int a) {return (a>=0) ? a : -a;}
+//----------------------------------------------------------------------------------------------------------------------------
+int compare_entries(const void* a, const void* b)
+{
+    const entry* entry_a = (const entry*) a;
+    const entry* entry_b = (const entry*) b;
+
+    if (entry_a->key < entry_b->key)
+        return -1;
+
+    if (entry_a->key > entry_b->key)
+        return 1;
+
+    return 0;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void sort_top_table(entry* table, uint32_t table_size)
+{
+    qsort(table, table_size, sizeof(entry), compare_entries);
+}
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Public functions
@@ -442,12 +467,24 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size;
     build_top_table(blocks, height_blocks*width_blocks, top_table, &top_table_size);
+    sort_top_table(top_table, top_table_size);
 
-    // write the table (no compression for now)
-    enc_put_bits(&codec, top_table_size-1, TABLE_INDEX_NUM_BITS);
-    for(uint32_t i=0; i<top_table_size; ++i)
+    // write the table
+    range_model table_entry;
+    model_init(&table_entry, 256);
+
+    enc_put_bits(&codec, top_table_size-1, TABLE_INDEX_NUM_BITS);   // entries count
+    for(uint32_t j=0; j<4; ++j)
+        enc_put_bits(&codec, (top_table[0].key >> (j*8)) & 0xff, 8);    // first entry not compressed
+
+    for(uint32_t i=1; i<top_table_size; ++i)
+    {
+        // table is sorted from small to big, so diff is always positive
+        uint32_t diff = top_table[i].key - top_table[i-1].key;
+
         for(uint32_t j=0; j<4; ++j)
-            enc_put_bits(&codec, (top_table[i].key >> (j*8)) & 0xff, 8);
+            enc_put(&codec, &table_entry, (diff >> (j*8)) & 0xff);
+    }
 
     range_model red, green, blue;
     model_init(&red,   1 << RED_NUM_BITS);
@@ -483,8 +520,8 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
                     uint8_t up_red, up_green, up_blue;
                     bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
 
-                    int previous_delta = abs(current_red - previous_red) + abs(current_green-previous_green) + abs(current_blue-previous_blue);
-                    int up_delta = abs(current_red-up_red) + abs(current_green-up_green) + abs(current_blue-up_blue);
+                    int previous_delta = int_abs(current_red - previous_red) + int_abs(current_green-previous_green) + int_abs(current_blue-previous_blue);
+                    int up_delta = int_abs(current_red-up_red) + int_abs(current_green-up_green) + int_abs(current_blue-up_blue);
 
                     enc_put(&codec, &color_reference, (up_delta < previous_delta) ? 1 : 0);
 
@@ -544,14 +581,23 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     model_init(&green, 1 << GREEN_NUM_BITS);
     model_init(&blue,  1 << BLUE_NUM_BITS);
 
+    range_model table_entry;
+    model_init(&table_entry, 256);
+
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size = dec_get_bits(&codec, TABLE_INDEX_NUM_BITS)+1;
 
-    for(uint32_t i=0; i<top_table_size; ++i)
+    top_table[0].key = 0;
+    for(uint32_t j=0; j<4; ++j)
+        top_table[0].key |= dec_get_bits(&codec, 8) << (j*8);
+
+    for(uint32_t i=1; i<top_table_size; ++i)
     {
-        top_table[i].key = 0;
+        uint32_t diff = 0;
         for(uint32_t j=0; j<4; ++j)
-            top_table[i].key |= dec_get_bits(&codec, 8) << (j*8);
+            diff |= dec_get(&codec, &table_entry) << (j*8);
+
+        top_table[i].key = top_table[i-1].key + diff;
     }
 
     range_model table_index, table_difference, block_mode, color_reference;
