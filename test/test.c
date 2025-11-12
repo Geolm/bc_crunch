@@ -171,6 +171,8 @@ bool test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
 
             stbi_image_free(data);
         }
+        else
+            fprintf(stdout, "failed\n");
     }
     return success;
 }
@@ -247,6 +249,27 @@ int main(void)
         return -1;
     
     if (!test_multiple("../all/Tile_%02u-512x512.png", 1, 20))
+        return -1;
+
+    if (!test_multiple("../all/{blaztree%u.png", 1, 7))
+        return -1;
+
+    if (!test_multiple("../all/{SW_Tree%02u.png", 1, 7))
+        return -1;
+
+    if (!test_multiple("../all/pkf_concrete%u.png", 1, 4))
+        return -1;
+    
+    if (!test_multiple("../all/pk02_floor%02u_C.png", 1, 13))
+        return -1;
+
+    if (!test_multiple("../all/pk02_trim%02u_C.png", 1, 5))
+        return -1;
+
+    if (!test_multiple("../all/rock%02u.png", 1, 4))
+        return -1;
+
+    if (!test_multiple("../all/brick%u.png", 1, 2))
         return -1;
 
 #endif
