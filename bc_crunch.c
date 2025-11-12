@@ -405,8 +405,13 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
     uint32_t best_index = 0;
     for(uint32_t i=0; i<table_size; ++i)
     {
-        uint32_t xor_value = table[i].key ^ original_indices;
-        uint32_t score = popcount(xor_value);
+        uint32_t delta = table[i].key ^ original_indices;
+
+        // early exit if identical
+        if (delta == 0)
+            return i;
+
+        uint32_t score = popcount(delta);
         if (score < best_score)
         {
             best_score = score;
@@ -444,13 +449,10 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
         for(uint32_t j=0; j<4; ++j)
             enc_put_bits(&codec, (top_table[i].key >> (j*8)) & 0xff, 8);
 
-    range_model red[2], green[2], blue[2];
-    for(uint32_t i=0; i<2; ++i)
-    {
-        model_init(&red[i],   1 << RED_NUM_BITS);
-        model_init(&green[i], 1 << GREEN_NUM_BITS);
-        model_init(&blue[i],  1 << BLUE_NUM_BITS);
-    }
+    range_model red, green, blue;
+    model_init(&red,   1 << RED_NUM_BITS);
+    model_init(&green, 1 << GREEN_NUM_BITS);
+    model_init(&blue,  1 << BLUE_NUM_BITS);
 
     range_model table_index, table_difference, block_mode, color_reference;
     model_init(&table_index, top_table_size);
@@ -495,9 +497,9 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
                     }
                 }
 
-                enc_put(&codec, &red[j], delta_encode(previous_red, current_red, RED_NUM_BITS));
-                enc_put(&codec, &green[j], delta_encode(previous_green, current_green, GREEN_NUM_BITS));
-                enc_put(&codec, &blue[j], delta_encode(previous_blue, current_blue, BLUE_NUM_BITS));
+                enc_put(&codec, &red, delta_encode(previous_red, current_red, RED_NUM_BITS));
+                enc_put(&codec, &green, delta_encode(previous_green, current_green, GREEN_NUM_BITS));
+                enc_put(&codec, &blue, delta_encode(previous_blue, current_blue, BLUE_NUM_BITS));
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
@@ -537,13 +539,10 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     range_codec codec;
     dec_init(&codec, (const uint8_t*)input, (uint32_t)length);
 
-    range_model red[2], green[2], blue[2];
-    for (uint32_t i = 0; i < 2; ++i)
-    {
-        model_init(&red[i],   1 << RED_NUM_BITS);
-        model_init(&green[i], 1 << GREEN_NUM_BITS);
-        model_init(&blue[i],  1 << BLUE_NUM_BITS);
-    }
+    range_model red, green, blue;
+    model_init(&red,   1 << RED_NUM_BITS);
+    model_init(&green, 1 << GREEN_NUM_BITS);
+    model_init(&blue,  1 << BLUE_NUM_BITS);
 
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size = dec_get_bits(&codec, TABLE_INDEX_NUM_BITS)+1;
@@ -584,9 +583,9 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
                 else
                     bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
                 
-                uint8_t delta_red = (uint8_t)dec_get(&codec, &red[j]);
-                uint8_t delta_green = (uint8_t)dec_get(&codec, &green[j]);
-                uint8_t delta_blue = (uint8_t)dec_get(&codec, &blue[j]);
+                uint8_t delta_red = (uint8_t)dec_get(&codec, &red);
+                uint8_t delta_green = (uint8_t)dec_get(&codec, &green);
+                uint8_t delta_blue = (uint8_t)dec_get(&codec, &blue);
 
                 uint8_t current_red = delta_decode(reference_red, delta_red, RED_NUM_BITS);
                 uint8_t current_green = delta_decode(reference_green, delta_green, GREEN_NUM_BITS);
