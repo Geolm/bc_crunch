@@ -154,26 +154,30 @@ bool test_multiple(const char* format, uint32_t range_min, uint32_t range_max)
         int width, height, num_channels;
         unsigned char *data = stbi_load(filename, &width, &height, &num_channels, 4);
 
-        fprintf(stdout, "width : %d height :%d num_channels :%d\n", width, height, num_channels);
-
-        arena_reset(&g_arena);
-
-        float ratio = test_bc1(data, width, height);
-        if (ratio >= 0.f)
+        if (data != NULL)
         {
-            global_ratio += ratio;
-            num_ratios++;
-        }
-        else 
-            success = false;
+            fprintf(stdout, "width : %d height :%d num_channels :%d\n", width, height, num_channels);
 
-        stbi_image_free(data);
+            arena_reset(&g_arena);
+
+            float ratio = test_bc1(data, width, height);
+            if (ratio >= 0.f)
+            {
+                global_ratio += ratio;
+                num_ratios++;
+            }
+            else 
+                success = false;
+
+            stbi_image_free(data);
+        }
     }
     return success;
 }
 
 #define TEXTURE_WIDTH (512)
 #define TEXTURE_HEIGHT (512)
+#define SMALL_SET
 
 //-----------------------------------------------------------------------------------------------------------------------------
 int main(void)
@@ -199,6 +203,7 @@ int main(void)
 
     arena_reset(&g_arena);
 
+#ifdef SMALL_SET
     // kodak photos
     if (!test_multiple("../textures/kodim%02u.png", 1, 5))
         return -1;
@@ -215,7 +220,38 @@ int main(void)
     if (!test_multiple("../textures/Brick_%02d-512x512.png", 10, 14))
         return -1;
 
-    fprintf(stdout, "average ratio : %f\n", global_ratio / (float) num_ratios);
+#else
+
+    if (!test_multiple("../all/kodim%02u.png", 1, 24))
+        return -1;
+
+    if (!test_multiple("../all/Dirt_%02u-512x512.png", 1, 20))
+        return -1;
+
+    if (!test_multiple("../all/Wood_%02u-512x512.png", 1, 20))
+        return -1;
+
+    if (!test_multiple("../all/Elements_%02u-512x512.png", 1, 20))
+        return -1;
+
+    if (!test_multiple("../all/Brick_%02u-512x512.png", 1, 20))
+        return -1;
+
+    if (!test_multiple("../all/Metal_%02u-512x512.png", 1, 20))
+        return -1;
+
+    if (!test_multiple("../all/Plaster_%02u-512x512.png", 1, 20))
+        return -1;
+
+    if (!test_multiple("../all/Stone_%02u-512x512.png", 1, 20))
+        return -1;
+    
+    if (!test_multiple("../all/Tile_%02u-512x512.png", 1, 20))
+        return -1;
+
+#endif
+
+    fprintf(stdout, "\n\naverage ratio : %f\n", global_ratio / (float) num_ratios);
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);

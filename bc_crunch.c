@@ -177,28 +177,28 @@ void dec_init(range_codec* codec, const uint8_t* input, uint32_t length)
 //----------------------------------------------------------------------------------------------------------------------
 uint32_t enc_done(range_codec* codec)
 {
-    uint32_t init_base = codec->base;            // done encoding: set final data bytes
+    uint32_t init_base = codec->base;
 
     if (codec->length > 2 * RC__MinLength) 
     {
-        codec->base  += RC__MinLength;                                     // base offset
-        codec->length = RC__MinLength >> 1;             // set new length for 1 more byte
+        codec->base  += RC__MinLength;
+        codec->length = RC__MinLength >> 1;
     }
     else 
     {
-        codec->base  += RC__MinLength >> 1;                                // base offset
-        codec->length = RC__MinLength >> 9;            // set new length for 2 more bytes
+        codec->base  += RC__MinLength >> 1;
+        codec->length = RC__MinLength >> 9;
     }
 
     if (init_base > codec->base) 
-        propagate_carry(codec);                 // overflow = carry
+        propagate_carry(codec);
 
-    renorm_enc_interval(codec);                // renormalization = output last bytes
+    renorm_enc_interval(codec);
 
     uint32_t code_bytes = (uint32_t)(codec->ac_pointer - codec->code_buffer);
-    assert(code_bytes <= codec->buffer_size); // code buffer overflow
+    assert(code_bytes <= codec->buffer_size);
 
-    return code_bytes;                                   // number of bytes used
+    return code_bytes;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -252,7 +252,7 @@ static inline void enc_put_bits(range_codec* codec, uint32_t data, uint32_t numb
 //----------------------------------------------------------------------------------------------------------------------
 uint32_t dec_get(range_codec* codec, range_model* model)
 {
-    assert(model->distribution != NULL); // adaptive model should be initialized
+    assert(model->distribution != NULL);
 
     uint32_t n, s, x, y = codec->length;
 
