@@ -16,6 +16,7 @@
 Arena g_arena = {};
 float global_ratio = 0.f;
 uint32_t num_ratios = 0;
+void* cruncher_memory = NULL;
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline int iq_random( int* seed)
@@ -60,7 +61,7 @@ float test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
     // TODO : add profiling
     size_t worst_case = bc1_size * 10;
     void* crunched_texture = arena_alloc(&g_arena, worst_case);
-    size_t crunched_size = bc1_crunch(bc1_texture, width, height, crunched_texture, worst_case);
+    size_t crunched_size = bc1_crunch(cruncher_memory, bc1_texture, width, height, crunched_texture, worst_case);
     float ratio = (float) bc1_size / (float) crunched_size;
 
     fprintf(stdout, "BC1 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc1_size, crunched_size, ratio); 
@@ -179,6 +180,8 @@ int main(void)
 {
     fprintf(stdout, "bc_crunch test suite\n\n");
 
+    cruncher_memory = malloc(crunch_min_size());
+
     // synthetic textures tests
     fprintf(stdout, "synthetic textures tests\n");
     uint8_t* rgba = arena_alloc(&g_arena, TEXTURE_WIDTH * TEXTURE_HEIGHT * 4);
@@ -219,6 +222,7 @@ int main(void)
     fprintf(stdout, "\n%zu kb allocated\n%zu kb used\n\n", bytes_allocated>>10, byte_used>>10);
 
     arena_free(&g_arena);
+    free(cruncher_memory);
 
     return 0;
 }

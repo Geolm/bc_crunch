@@ -314,8 +314,6 @@ typedef struct entry
     uint32_t count;
 } entry;
 
-static entry hashmap[HASHMAP_SIZE];
-
 //----------------------------------------------------------------------------------------------------------------------------
 static inline uint32_t hash32(uint32_t x)
 {
@@ -328,7 +326,7 @@ static inline uint32_t hash32(uint32_t x)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void build_top_table(const bc1_block* blocks, uint32_t num_blocks, entry* output, uint32_t* num_entries)
+void build_top_table(entry* hashmap, const bc1_block* blocks, uint32_t num_blocks, entry* output, uint32_t* num_entries)
 {
     // clear the hashmap
     for(uint32_t i=0; i<HASHMAP_SIZE; ++i)
@@ -452,9 +450,17 @@ void sort_top_table(entry* table, uint32_t table_size)
 // Public functions
 //----------------------------------------------------------------------------------------------------------------------------
 
-size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* output, size_t length)
+//----------------------------------------------------------------------------------------------------------------------------
+size_t crunch_min_size(void)
+{
+    return sizeof(entry) * HASHMAP_SIZE;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+size_t bc1_crunch(void* cruncher_memory, const void* input, uint32_t width, uint32_t height, void* output, size_t length)
 {
     assert((width%4 == 0) && (height%4 == 0));
+    assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
 
     bc1_block* blocks = (bc1_block*) input;
     uint32_t height_blocks = height/4;
@@ -464,9 +470,10 @@ size_t bc1_crunch(const void* input, uint32_t width, uint32_t height, void* outp
     enc_init(&codec, (uint8_t*) output, (uint32_t)length);
 
     // build a histogram and select the TABLE_SIZE block indices which are most used
+    entry* hashmap = (entry*) cruncher_memory;
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size;
-    build_top_table(blocks, height_blocks*width_blocks, top_table, &top_table_size);
+    build_top_table(hashmap, blocks, height_blocks*width_blocks, top_table, &top_table_size);
     sort_top_table(top_table, top_table_size);
 
     // write the table
