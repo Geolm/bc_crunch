@@ -410,7 +410,7 @@ static inline uint32_t hash32(uint32_t x)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void build_top_table(entry* hashmap, const void* input, size_t element_size, uint32_t num_blocks, entry* output, uint32_t* num_entries)
+void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t num_blocks, entry* output, uint32_t* num_entries)
 {
     // clear the hashmap
     for(uint32_t i=0; i<HASHMAP_SIZE; ++i)
@@ -419,7 +419,7 @@ void build_top_table(entry* hashmap, const void* input, size_t element_size, uin
     // insert all blocks indices in the hashmap
     for(uint32_t i=0; i<num_blocks; ++i)
     {
-        const bc1_block* b = (const bc1_block*) get_block(input, element_size, 0, i, 0);
+        const bc1_block* b = (const bc1_block*) get_block(input, stride, 0, i, 0);
 
         uint32_t h = hash32(b->indices);
         uint32_t index = h & (HASHMAP_SIZE - 1);
@@ -560,7 +560,7 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t ind
 static const uint32_t morton_inverse[16] = {0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15};
 
 //----------------------------------------------------------------------------------------------------------------------------
-size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size, uint32_t width, uint32_t height, void* output, size_t length)
+void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
@@ -568,23 +568,20 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size,
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
 
-    range_codec codec;
-    enc_init(&codec, (uint8_t*) output, (uint32_t)length);
-
     // build a histogram and select the TABLE_SIZE block indices which are most used
     entry* hashmap = (entry*) cruncher_memory;
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size;
-    build_top_table(hashmap, input, element_size, height_blocks*width_blocks, top_table, &top_table_size);
+    build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
     sort_top_table(top_table, top_table_size);
 
     // write the table
     range_model table_entry;
     model_init(&table_entry, 256);
 
-    enc_put_bits(&codec, top_table_size-1, TABLE_INDEX_NUM_BITS);   // entries count
+    enc_put_bits(codec, top_table_size-1, TABLE_INDEX_NUM_BITS);   // entries count
     for(uint32_t j=0; j<4; ++j)
-        enc_put_bits(&codec, (top_table[0].key >> (j*8)) & 0xff, 8);    // first entry not compressed
+        enc_put_bits(codec, (top_table[0].key >> (j*8)) & 0xff, 8);    // first entry not compressed
 
     for(uint32_t i=1; i<top_table_size; ++i)
     {
@@ -592,7 +589,7 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size,
         uint32_t diff = top_table[i].key - top_table[i-1].key;
 
         for(uint32_t j=0; j<4; ++j)
-            enc_put(&codec, &table_entry, (diff >> (j*8)) & 0xff);
+            enc_put(codec, &table_entry, (diff >> (j*8)) & 0xff);
     }
 
     range_model red, green, blue;
@@ -615,7 +612,7 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size,
         {
             // zig-zag pattern delta compression for colors
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
-            const bc1_block* current = get_block(input, element_size, width_blocks, zigzag_x, y);
+            const bc1_block* current = get_block(input, stride, width_blocks, zigzag_x, y);
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t current_red, current_green, current_blue;
@@ -626,14 +623,14 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size,
 
                 if (y>0)
                 {
-                    const bc1_block* up = get_block(input, element_size, width_blocks, zigzag_x, y-1);
+                    const bc1_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
                     uint8_t up_red, up_green, up_blue;
                     bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
 
                     int previous_delta = int_abs(current_red - previous_red) + int_abs(current_green-previous_green) + int_abs(current_blue-previous_blue);
                     int up_delta = int_abs(current_red-up_red) + int_abs(current_green-up_green) + int_abs(current_blue-up_blue);
 
-                    enc_put(&codec, &color_reference, (up_delta < previous_delta) ? 1 : 0);
+                    enc_put(codec, &color_reference, (up_delta < previous_delta) ? 1 : 0);
 
                     // overwrite previous value to avoid using a new set of variables
                     if (up_delta < previous_delta)
@@ -644,47 +641,42 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size,
                     }
                 }
 
-                enc_put(&codec, &red, delta_encode(previous_red, current_red, RED_DELTA_NUM_BITS));
-                enc_put(&codec, &green, delta_encode(previous_green, current_green, GREEN_DELTA_NUM_BITS));
-                enc_put(&codec, &blue, delta_encode(previous_blue, current_blue, BLUE_DELTA_NUM_BITS));
+                enc_put(codec, &red, delta_encode(previous_red, current_red, RED_DELTA_NUM_BITS));
+                enc_put(codec, &green, delta_encode(previous_green, current_green, GREEN_DELTA_NUM_BITS));
+                enc_put(codec, &blue, delta_encode(previous_blue, current_blue, BLUE_DELTA_NUM_BITS));
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
             // and the delta with this reference
             uint32_t reference = top_table_nearest(top_table, top_table_size, current->indices);
-            enc_put(&codec, &table_index, reference);
+            enc_put(codec, &table_index, reference);
 
             // xor the difference and encode (could be 0 if equal to reference)
             uint32_t difference = current->indices ^ top_table[reference].key;
 
             if (difference == 0)
-                enc_put(&codec, &block_mode, 0);
+                enc_put(codec, &block_mode, 0);
             else
             {
-                enc_put(&codec, &block_mode, 1);
+                enc_put(codec, &block_mode, 1);
 
                 // encode the full 32 bits difference
                 for(uint32_t j=0; j<4; ++j)
-                    enc_put(&codec, &table_difference, (difference>>(j*8))&0xff);
+                    enc_put(codec, &table_difference, (difference>>(j*8))&0xff);
             }
 
             previous = current;
         }
     }
-
-    return enc_done(&codec);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output, size_t element_size)
+void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* output, size_t stride)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
-
-    range_codec codec;
-    dec_init(&codec, (const uint8_t*)input, (uint32_t)length);
 
     range_model red, green, blue;
     model_init(&red,   1 << RED_DELTA_NUM_BITS);
@@ -695,17 +687,17 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     model_init(&table_entry, 256);
 
     entry top_table[TABLE_SIZE];
-    uint32_t top_table_size = dec_get_bits(&codec, TABLE_INDEX_NUM_BITS)+1;
+    uint32_t top_table_size = dec_get_bits(codec, TABLE_INDEX_NUM_BITS)+1;
 
     top_table[0].key = 0;
     for(uint32_t j=0; j<4; ++j)
-        top_table[0].key |= dec_get_bits(&codec, 8) << (j*8);
+        top_table[0].key |= dec_get_bits(codec, 8) << (j*8);
 
     for(uint32_t i=1; i<top_table_size; ++i)
     {
         uint32_t diff = 0;
         for(uint32_t j=0; j<4; ++j)
-            diff |= dec_get(&codec, &table_entry) << (j*8);
+            diff |= dec_get(codec, &table_entry) << (j*8);
 
         top_table[i].key = top_table[i-1].key + diff;
     }
@@ -725,20 +717,20 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
         {
             // zig-zag pattern color
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
-            bc1_block* current = (bc1_block*) get_block(output, element_size, width_blocks, zigzag_x, y);
+            bc1_block* current = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y);
             for (uint32_t j = 0; j < 2; ++j)
             {
                 uint8_t reference_red, reference_green, reference_blue;
                 bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
-                if (y>0 && dec_get(&codec, &color_reference))
+                if (y>0 && dec_get(codec, &color_reference))
                 {
-                    bc1_block* up = (bc1_block*) get_block(output, element_size, width_blocks, zigzag_x, y-1);
+                    bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
                     bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
                 }
 
-                uint8_t delta_red = (uint8_t)dec_get(&codec, &red);
-                uint8_t delta_green = (uint8_t)dec_get(&codec, &green);
-                uint8_t delta_blue = (uint8_t)dec_get(&codec, &blue);
+                uint8_t delta_red = (uint8_t)dec_get(codec, &red);
+                uint8_t delta_green = (uint8_t)dec_get(codec, &green);
+                uint8_t delta_blue = (uint8_t)dec_get(codec, &blue);
 
                 uint8_t current_red = delta_decode(reference_red, delta_red, RED_DELTA_NUM_BITS);
                 uint8_t current_green = delta_decode(reference_green, delta_green, GREEN_DELTA_NUM_BITS);
@@ -748,8 +740,8 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             }
 
             // indices difference with top table
-            uint32_t reference = dec_get(&codec, &table_index);
-            uint32_t mode = dec_get(&codec, &block_mode);
+            uint32_t reference = dec_get(codec, &table_index);
+            uint32_t mode = dec_get(codec, &block_mode);
 
             if (mode == 0)
                 current->indices = top_table[reference].key;
@@ -757,7 +749,7 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             {
                 uint32_t difference=0;
                 for(uint32_t j=0; j<4; ++j)
-                    difference = difference | (dec_get(&codec, &table_difference) << (j*8));
+                    difference = difference | (dec_get(codec, &table_difference) << (j*8));
                 current->indices =  difference ^ top_table[reference].key;
             }
             previous = current;
@@ -766,16 +758,13 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-size_t bc4_crunch(void* cruncher_memory, const void* input, size_t element_size, uint32_t width, uint32_t height, void* output, size_t length)
+void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
 
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
-
-    range_codec codec;
-    enc_init(&codec, (uint8_t*) output, (uint32_t)length);
 
     range_model color_delta[2];
     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
@@ -789,7 +778,7 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, size_t element_size,
     model_init(&dict_reference, DICTIONARY_SIZE);
 
     bc4_block empty_block = {.color = {0, 128}};
-    bc4_block* previous = &empty_block;
+    const bc4_block* previous = &empty_block;
 
     // dictionary initialization
     uint64_t dictionary[DICTIONARY_SIZE];
@@ -803,20 +792,20 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, size_t element_size,
         {
             // zig-zag pattern
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
-            const bc4_block* current = get_block(input, element_size, width_blocks, zigzag_x, y);
+            const bc4_block* current = get_block(input, stride, width_blocks, zigzag_x, y);
             for(uint32_t j=0; j<2; ++j)
             {
                 int previous_delta = int_abs(current->color[j] - previous->color[j]);
                 uint8_t candidate = previous->color[j];
                 if (y>0)
                 {
-                    const bc4_block* up = get_block(input, element_size, width_blocks, zigzag_x, y-1);
+                    const bc4_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
                     int up_delta = int_abs(current->color[j] - up->color[j]);
                     bool up_better = (up_delta < previous_delta);
-                    enc_put(&codec, &color_reference,  up_better ? 1 : 0);
+                    enc_put(codec, &color_reference,  up_better ? 1 : 0);
                     candidate = (up_better) ? up->color[j] : candidate;
                 }
-                enc_put(&codec, &color_delta[j], delta_encode_wrap(candidate, current->color[j]));
+                enc_put(codec, &color_delta[j], delta_encode_wrap(candidate, current->color[j]));
             }
 
             // search in the dictionary for the current bitfield
@@ -829,8 +818,8 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, size_t element_size,
             // found? just write the dictionary index
             if (found_index != UINT32_MAX)
             {
-                enc_put(&codec, &use_dict, 1);
-                enc_put(&codec, &dict_reference, found_index);
+                enc_put(codec, &use_dict, 1);
+                enc_put(codec, &dict_reference, found_index);
             }
             else
             {
@@ -839,35 +828,31 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, size_t element_size,
                 dict_index = (dict_index + 1) & (DICTIONARY_SIZE-1);   // num entries has to be a power of two
 
                 // write the indices with local difference delta encoded
-                enc_put(&codec, &use_dict, 0);
+                enc_put(codec, &use_dict, 0);
 
                 uint8_t prev_data = bc4_get_index(current, 0);
-                enc_put(&codec, &first_index, prev_data);
+                enc_put(codec, &first_index, prev_data);
 
                 // morton delta compress the indices
                 for(uint32_t j=1; j<16; ++j)
                 {
                     uint8_t data = bc4_get_index(current, morton_inverse[j]);
-                    enc_put(&codec, &indices, delta_encode(prev_data, data, 4));
+                    enc_put(codec, &indices, delta_encode(prev_data, data, 4));
                     prev_data = data;
                 }
             }
             previous = current;
         }
     }
-    return enc_done(&codec);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output, size_t element_size)
+void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* output, size_t stride)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
-
-    range_codec codec;
-    dec_init(&codec, (const uint8_t*)input, (uint32_t)length);
 
     range_model color_delta[2];
     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
@@ -895,37 +880,37 @@ void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
         {
             // zig-zag pattern
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
-            bc4_block* current = (bc4_block*) get_block(output, element_size, width_blocks, zigzag_x, y);
+            bc4_block* current = (bc4_block*) get_block(output, stride, width_blocks, zigzag_x, y);
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t reference = previous->color[j];
-                if (y>0 && dec_get(&codec, &color_reference))
+                if (y>0 && dec_get(codec, &color_reference))
                 {
-                    bc4_block* up = (bc4_block*) get_block(output, element_size, width_blocks, zigzag_x, y-1);
+                    bc4_block* up = (bc4_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
                     reference = up->color[j];
                 }
 
-                uint8_t delta = dec_get(&codec, &color_delta[j]);
+                uint8_t delta = dec_get(codec, &color_delta[j]);
                 current->color[j] = delta_decode_wrap(reference, delta);
             }
 
-            if (dec_get(&codec, &use_dict))
+            if (dec_get(codec, &use_dict))
             {
                 // data should be in the dictionary
-                uint64_t bitfield = dictionary[dec_get(&codec, &dict_reference)];
+                uint64_t bitfield = dictionary[dec_get(codec, &dict_reference)];
                 current->indices[0] = (bitfield>>32) & 0xffff;
                 current->indices[1] = (bitfield>>16) & 0xffff;
                 current->indices[2] = bitfield & 0xffff;
             }
             else
             {
-                uint8_t prev_data = dec_get(&codec, &first_index);
+                uint8_t prev_data = dec_get(codec, &first_index);
                 bc4_set_index(current, 0, prev_data);
 
                 // morton delta compress the indices
                 for(uint32_t j=1; j<16; ++j)
                 {
-                    uint8_t delta = dec_get(&codec, &indices);
+                    uint8_t delta = dec_get(codec, &indices);
                     uint8_t data = delta_decode(prev_data, delta, 4);
                     bc4_set_index(current, morton_inverse[j], data);
                     prev_data = data;
@@ -955,10 +940,29 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
 {
     assert(cruncher_memory != NULL && "bc_crunch needs memory to run, allocate a buffer of size crunch_min_size()");
     assert(input != NULL);
+
+    range_codec codec;
+    enc_init(&codec, (uint8_t*) output, (uint32_t)length);
+
     switch(format)
     {
-    case bc1 : return bc1_crunch(cruncher_memory, input, sizeof(bc1_block), width, height, output, length);
-    case bc4 : return bc4_crunch(cruncher_memory, input, sizeof(bc4_block), width, height, output, length);
+    case bc1 : 
+        {
+            bc1_crunch(&codec, cruncher_memory, input, sizeof(bc1_block), width, height);
+            return enc_done(&codec);
+        }
+    case bc3 : 
+        {
+            size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
+            bc4_crunch(&codec, cruncher_memory, input, block_size, width, height);
+            bc1_crunch(&codec, cruncher_memory, ptr_shift_const(input, sizeof(bc4_block)), block_size, width, height);
+            return enc_done(&codec);
+        }
+    case bc4 : 
+        {
+            bc4_crunch(&codec, cruncher_memory, input, sizeof(bc4_block), width, height);
+            return enc_done(&codec);
+        }
     default: return 0;
     }
     return 0;
@@ -967,10 +971,20 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
 //----------------------------------------------------------------------------------------------------------------------------
 void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, enum bc_format format, void* output)
 {
+    range_codec codec;
+    dec_init(&codec, (const uint8_t*)input, (uint32_t)length);
+
     switch(format)
     {
-    case bc1 : return bc1_decrunch(input, length, width, height, output, sizeof(bc1_block));
-    case bc4 : return bc4_decrunch(input, length, width, height, output, sizeof(bc4_block));
+    case bc1 : bc1_decrunch(&codec, width, height, output, sizeof(bc1_block)); break;
+    case bc3 : 
+        {
+            size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
+            bc4_decrunch(&codec, width, height, output, block_size);
+            bc1_decrunch(&codec, width, height, ptr_shift(output, sizeof(bc4_block)), block_size);
+            break;
+        }
+    case bc4 : bc4_decrunch(&codec, width, height, output, sizeof(bc4_block)); break;
     default: break;
     }
 }

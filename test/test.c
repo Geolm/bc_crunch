@@ -85,6 +85,62 @@ float test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
 }
 
 //-----------------------------------------------------------------------------------------------------------------------------
+bool test_bc3(const char* filename)
+{
+    uint32_t width, height, num_channels;
+
+    fprintf(stdout, "\nopening %s\n", filename);
+
+    unsigned char *data = stbi_load(filename, (int*)&width, (int*)&height, (int*)&num_channels, 4);
+
+    fprintf(stdout, "width : %d height :%d num_channels :%d\n", width, height, num_channels);
+
+    if (data == NULL || num_channels != 4)
+        return false;
+
+    uint32_t bc3_size = (width * height);
+    uint8_t* bc3_texture = arena_alloc(&g_arena, bc3_size);
+
+    uint32_t block_index=0;
+    for(uint32_t y=0; y<height/4; ++y)
+    {
+        for(uint32_t x=0; x<width/4; ++x)
+        {
+            uint8_t block_image[128];
+            extract_4x4_block(data, width, x*4, y*4, block_image);
+            stb_compress_dxt_block(&bc3_texture[16 * block_index], block_image, 1, STB_DXT_HIGHQUAL);
+            block_index++;
+        }
+    }
+
+    arena_reset(&g_arena);
+
+    void* crunched_texture = arena_alloc(&g_arena, bc3_size * 2);
+    size_t crunched_size = bc_crunch(cruncher_memory, bc3_texture, width, height, bc3, crunched_texture, bc3_size*2);
+    float ratio = (float) bc3_size / (float) crunched_size;
+
+    fprintf(stdout, "BC3 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc3_size, crunched_size, ratio); 
+
+    uint8_t* uncompressed_texture = arena_alloc(&g_arena, bc3_size);
+    bc_decrunch(crunched_texture, crunched_size, width, height, bc3, uncompressed_texture);
+
+    fprintf(stdout, "comparing decrushed vs original : ");
+    for(uint32_t i=0; i<bc3_size; ++i)
+    {
+        if (uncompressed_texture[i] != bc3_texture[i])
+        {
+            fprintf(stdout, "failed, divergence at the %uth bytes\n", i);
+            return false;
+        }
+    }
+
+    fprintf(stdout, "ok\n");
+    stbi_image_free(data);
+
+    return true;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
 static inline uint32_t lerp_color(uint32_t a, uint32_t b, float t)
 {
     int tt = (int)(t * 256.f);
@@ -305,7 +361,21 @@ int main(void)
             return -1;
         }
 
-    fprintf(stdout, "ok\n");
+    fprintf(stdout, "ok\n\n");
+
+
+    fprintf(stdout, "-----------------------------------\n");
+    fprintf(stdout, "| BC3 tests                       |\n");
+    fprintf(stdout, "-----------------------------------\n\n");
+
+    if (!test_bc3("../textures/apps-internet-web-browser.png"))
+        return -1;
+
+    if (!test_bc3("../textures/plant_05.png"))
+        return -1;
+
+    if (!test_bc3("../textures/plant_60.png"))
+        return -1;
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);
