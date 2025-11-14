@@ -18,6 +18,9 @@ tiny dependency-free lossless compressor for BCn texture streams (C99, ~500 LoC)
 * 1.487026 only one set of models for color
 * 1.491485 top table sorted and compressed
 
+satoshi font atlas bc4 = 9947 ratio : 3.294260
+
+
 
 
 

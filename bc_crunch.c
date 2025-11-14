@@ -719,16 +719,11 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             bc1_block* up = (y>0) ? current - width_blocks : NULL;
             for (uint32_t j = 0; j < 2; ++j)
             {
-                bool reference_is_up = false;
-                if (y>0)
-                    reference_is_up = (dec_get(&codec, &color_reference) == 1);
-                
                 uint8_t reference_red, reference_green, reference_blue;
-                if (reference_is_up)
+                bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
+                if (y>0 && dec_get(&codec, &color_reference))
                     bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
-                else
-                    bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
-                
+
                 uint8_t delta_red = (uint8_t)dec_get(&codec, &red);
                 uint8_t delta_green = (uint8_t)dec_get(&codec, &green);
                 uint8_t delta_blue = (uint8_t)dec_get(&codec, &blue);
@@ -892,7 +887,10 @@ void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             bc4_block* up = (y>0) ? current - width_blocks : NULL;
             for(uint32_t j=0; j<2; ++j)
             {
-                uint8_t reference = (dec_get(&codec, &color_reference) == 1) ? up->color[j] : previous->color[j];
+                uint8_t reference = previous->color[j];
+                if (y>0 && dec_get(&codec, &color_reference))
+                    reference = up->color[j];
+
                 uint8_t delta = dec_get(&codec, &color_delta[j]);
                 current->color[j] = delta_decode_wrap(reference, delta);
             }
@@ -908,6 +906,7 @@ void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             else
             {
                 uint8_t prev_data = dec_get(&codec, &first_index);
+                bc4_set_index(current, 0, prev_data);
 
                 // morton delta compress the indices
                 for(uint32_t j=1; j<16; ++j)

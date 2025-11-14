@@ -12,6 +12,7 @@
 #include "stb_image.h"
 
 #include <stdbool.h>
+#include "default_font_atlas.h"
 
 Arena g_arena = {};
 float global_ratio = 0.f;
@@ -188,6 +189,10 @@ int main(void)
 
     cruncher_memory = malloc(crunch_min_size());
 
+    fprintf(stdout, "-----------------------------------\n");
+    fprintf(stdout, "| BC1 tests                       |\n");
+    fprintf(stdout, "-----------------------------------\n\n");
+
     // synthetic textures tests
     fprintf(stdout, "synthetic textures tests\n");
     uint8_t* rgba = arena_alloc(&g_arena, TEXTURE_WIDTH * TEXTURE_HEIGHT * 4);
@@ -274,7 +279,33 @@ int main(void)
 
 #endif
 
-    fprintf(stdout, "\n\naverage ratio : %f\n", global_ratio / (float) num_ratios);
+    float average_ratio = global_ratio / (float) num_ratios;
+    fprintf(stdout, "\n\naverage ratio : %f\n\n", average_ratio);
+
+    if (average_ratio < 1.49f)
+        return -1;
+
+    fprintf(stdout, "-----------------------------------\n");
+    fprintf(stdout, "| BC4 tests                       |\n");
+    fprintf(stdout, "-----------------------------------\n\n");
+
+    void* crunched = arena_alloc(&g_arena, default_font_atlas_size*2);
+    size_t crunched_size = bc4_crunch(cruncher_memory, default_font_atlas, 256, 256, crunched, default_font_atlas_size*2);
+
+    fprintf(stdout, "satoshi font atlas bc4 = %zu ratio : %f\n", crunched_size, (float)default_font_atlas_size / (float)crunched_size);
+    fprintf(stdout, "verifying decrunch ");
+
+    uint8_t* decrunched = arena_alloc(&g_arena, default_font_atlas_size);
+    bc4_decrunch(crunched, crunched_size, 256, 256, decrunched);
+
+    for(uint32_t i=0; i<default_font_atlas_size; ++i)
+        if (decrunched[i] != default_font_atlas[i])
+        {
+            fprintf(stdout, "failed, bytes %u is different\n", i);
+            return -1;
+        }
+
+    fprintf(stdout, "ok\n");
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);
