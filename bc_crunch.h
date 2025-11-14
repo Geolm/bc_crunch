@@ -26,8 +26,20 @@ size_t crunch_min_size(void);
 size_t bc1_crunch(void* cruncher_memory, const void* input, uint32_t width, uint32_t height, void* output, size_t length);
 
 //----------------------------------------------------------------------------------------------------------------------------
-// Decompresses 
+// Decompresses the crunched image into a BC1 image ready to be used by the GPU
+//      [input]             Pointer to the crunched data
+//      [length]            Length in bytes of the crunched data
+//      [width, height]     Size of the image in pixels
+//      [output]            User-allocated memory to receive the BC1 image (should be big enough)
 void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output);
+
+
+//----------------------------------------------------------------------------------------------------------------------------
+// Compresses with lossless technique a BC4 image
+size_t bc4_crunch(void* cruncher_memory, const void* input, uint32_t width, uint32_t height, void* output, size_t length);
+
+
+void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output);
 
 #ifdef __cplusplus
 }
