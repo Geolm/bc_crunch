@@ -1,4 +1,8 @@
 # bc_crunch
+
+![C Standard](https://img.shields.io/badge/C-C99-F4A261)
+[![Build Status](https://github.com/Geolm/bc_crunch/actions/workflows/c.yml/badge.svg)](https://github.com/geolm/crunch/actions)
+
 tiny dependency-free lossless compressor for BCn texture streams (C99, ~500 LoC)
 
 
