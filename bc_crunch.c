@@ -337,6 +337,18 @@ typedef struct entry
 } entry;
 
 //----------------------------------------------------------------------------------------------------------------------------
+static inline void* ptr_shift(void *base, size_t shift_bytes)
+{
+    return (void *)((uint8_t *)base + shift_bytes);
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+static inline const void* ptr_shift_const(const void *base, size_t shift_bytes)
+{
+    return (const void *)((const uint8_t *)base + shift_bytes);
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 static inline const void* get_block(const void *base, size_t elem_size, uint32_t width_blocks, uint32_t x, uint32_t y)
 {
     size_t row_index = (size_t)y * width_blocks;
@@ -664,7 +676,7 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size,
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output)
+void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output, size_t element_size)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
@@ -705,7 +717,6 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     model_init(&color_reference, 2);
 
     bc1_block empty_block = {0};
-    bc1_block* blocks = (bc1_block*)output;
     bc1_block* previous = &empty_block;
 
     for(uint32_t y = 0; y < height_blocks; ++y)
@@ -713,14 +724,17 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
             // zig-zag pattern color
-            bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
-            bc1_block* up = (y>0) ? current - width_blocks : NULL;
+            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
+            bc1_block* current = (bc1_block*) get_block(output, element_size, width_blocks, zigzag_x, y);
             for (uint32_t j = 0; j < 2; ++j)
             {
                 uint8_t reference_red, reference_green, reference_blue;
                 bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
                 if (y>0 && dec_get(&codec, &color_reference))
+                {
+                    bc1_block* up = (bc1_block*) get_block(output, element_size, width_blocks, zigzag_x, y-1);
                     bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
+                }
 
                 uint8_t delta_red = (uint8_t)dec_get(&codec, &red);
                 uint8_t delta_green = (uint8_t)dec_get(&codec, &green);
@@ -752,7 +766,7 @@ void bc1_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-size_t bc4_crunch(void* cruncher_memory, const void* input, uint32_t width, uint32_t height, void* output, size_t length)
+size_t bc4_crunch(void* cruncher_memory, const void* input, size_t element_size, uint32_t width, uint32_t height, void* output, size_t length)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
@@ -774,7 +788,6 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, uint32_t width, uint
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
 
-    bc4_block* blocks = (bc4_block*) input;
     bc4_block empty_block = {.color = {0, 128}};
     bc4_block* previous = &empty_block;
 
@@ -789,14 +802,15 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, uint32_t width, uint
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
             // zig-zag pattern
-            bc4_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
-            bc4_block* up = (y>0) ? current - width_blocks : NULL;
+            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
+            const bc4_block* current = get_block(input, element_size, width_blocks, zigzag_x, y);
             for(uint32_t j=0; j<2; ++j)
             {
                 int previous_delta = int_abs(current->color[j] - previous->color[j]);
                 uint8_t candidate = previous->color[j];
                 if (y>0)
                 {
+                    const bc4_block* up = get_block(input, element_size, width_blocks, zigzag_x, y-1);
                     int up_delta = int_abs(current->color[j] - up->color[j]);
                     bool up_better = (up_delta < previous_delta);
                     enc_put(&codec, &color_reference,  up_better ? 1 : 0);
@@ -845,7 +859,7 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, uint32_t width, uint
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output)
+void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, void* output, size_t element_size)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
@@ -866,7 +880,6 @@ void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
 
-    bc4_block* blocks = (bc4_block*) output;
     bc4_block empty_block = {.color = {0, 128}};
     bc4_block* previous = &empty_block;
 
@@ -881,13 +894,16 @@ void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
             // zig-zag pattern
-            bc4_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
-            bc4_block* up = (y>0) ? current - width_blocks : NULL;
+            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
+            bc4_block* current = (bc4_block*) get_block(output, element_size, width_blocks, zigzag_x, y);
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t reference = previous->color[j];
                 if (y>0 && dec_get(&codec, &color_reference))
+                {
+                    bc4_block* up = (bc4_block*) get_block(output, element_size, width_blocks, zigzag_x, y-1);
                     reference = up->color[j];
+                }
 
                 uint8_t delta = dec_get(&codec, &color_delta[j]);
                 current->color[j] = delta_decode_wrap(reference, delta);
@@ -942,7 +958,7 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
     switch(format)
     {
     case bc1 : return bc1_crunch(cruncher_memory, input, sizeof(bc1_block), width, height, output, length);
-    case bc4 : return bc4_crunch(cruncher_memory, input, width, height, output, length);
+    case bc4 : return bc4_crunch(cruncher_memory, input, sizeof(bc4_block), width, height, output, length);
     default: return 0;
     }
     return 0;
@@ -953,8 +969,8 @@ void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t heig
 {
     switch(format)
     {
-    case bc1 : return bc1_decrunch(input, length, width, height, output);
-    case bc4 : return bc4_decrunch(input, length, width, height, output);
+    case bc1 : return bc1_decrunch(input, length, width, height, output, sizeof(bc1_block));
+    case bc4 : return bc4_decrunch(input, length, width, height, output, sizeof(bc4_block));
     default: break;
     }
 }
