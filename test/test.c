@@ -62,13 +62,13 @@ float test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
     // TODO : add profiling
     size_t worst_case = bc1_size * 10;
     void* crunched_texture = arena_alloc(&g_arena, worst_case);
-    size_t crunched_size = bc1_crunch(cruncher_memory, bc1_texture, width, height, crunched_texture, worst_case);
+    size_t crunched_size = bc_crunch(cruncher_memory, bc1_texture, width, height, bc1, crunched_texture, worst_case);
     float ratio = (float) bc1_size / (float) crunched_size;
 
     fprintf(stdout, "BC1 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc1_size, crunched_size, ratio); 
 
     uint8_t* uncompressed_texture = arena_alloc(&g_arena, bc1_size);
-    bc1_decrunch(crunched_texture, crunched_size, width, height, uncompressed_texture);
+    bc_decrunch(crunched_texture, crunched_size, width, height, bc1, uncompressed_texture);
 
     fprintf(stdout, "comparing decrushed vs original : ");
     for(uint32_t i=0; i<bc1_size; ++i)
@@ -290,13 +290,13 @@ int main(void)
     fprintf(stdout, "-----------------------------------\n\n");
 
     void* crunched = arena_alloc(&g_arena, default_font_atlas_size*2);
-    size_t crunched_size = bc4_crunch(cruncher_memory, default_font_atlas, 256, 256, crunched, default_font_atlas_size*2);
+    size_t crunched_size = bc_crunch(cruncher_memory, default_font_atlas, 256, 256, bc4, crunched, default_font_atlas_size*2);
 
     fprintf(stdout, "satoshi font atlas bc4 = %zu ratio : %f\n", crunched_size, (float)default_font_atlas_size / (float)crunched_size);
     fprintf(stdout, "verifying decrunch ");
 
     uint8_t* decrunched = arena_alloc(&g_arena, default_font_atlas_size);
-    bc4_decrunch(crunched, crunched_size, 256, 256, decrunched);
+    bc_decrunch(crunched, crunched_size, 256, 256, bc4, decrunched);
 
     for(uint32_t i=0; i<default_font_atlas_size; ++i)
         if (decrunched[i] != default_font_atlas[i])

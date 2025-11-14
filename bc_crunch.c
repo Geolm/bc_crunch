@@ -330,6 +330,21 @@ typedef struct bc4_block
 } bc4_block;
 
 //----------------------------------------------------------------------------------------------------------------------------
+typedef struct entry
+{
+    uint32_t key;
+    uint32_t count;
+} entry;
+
+//----------------------------------------------------------------------------------------------------------------------------
+static inline const void* get_block(const void *base, size_t elem_size, uint32_t width_blocks, uint32_t x, uint32_t y)
+{
+    size_t row_index = (size_t)y * width_blocks;
+    size_t idx = row_index + x;
+    return (const uint8_t *)base + idx * elem_size;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t delta_encode(uint8_t prev, uint8_t curr, uint8_t num_bits)
 {
     int delta = (int)curr - (int)prev;
@@ -372,13 +387,6 @@ static inline uint16_t bc1_pack_565(uint8_t r5, uint8_t g6, uint8_t b5)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-typedef struct entry
-{
-    uint32_t key;
-    uint32_t count;
-} entry;
-
-//----------------------------------------------------------------------------------------------------------------------------
 static inline uint32_t hash32(uint32_t x)
 {
     x ^= x >> 16;
@@ -390,7 +398,7 @@ static inline uint32_t hash32(uint32_t x)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void build_top_table(entry* hashmap, const bc1_block* blocks, uint32_t num_blocks, entry* output, uint32_t* num_entries)
+void build_top_table(entry* hashmap, const void* input, size_t element_size, uint32_t num_blocks, entry* output, uint32_t* num_entries)
 {
     // clear the hashmap
     for(uint32_t i=0; i<HASHMAP_SIZE; ++i)
@@ -399,7 +407,7 @@ void build_top_table(entry* hashmap, const bc1_block* blocks, uint32_t num_block
     // insert all blocks indices in the hashmap
     for(uint32_t i=0; i<num_blocks; ++i)
     {
-        const bc1_block* b = &blocks[i];
+        const bc1_block* b = (const bc1_block*) get_block(input, element_size, 0, i, 0);
 
         uint32_t h = hash32(b->indices);
         uint32_t index = h & (HASHMAP_SIZE - 1);
@@ -540,22 +548,11 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t ind
 static const uint32_t morton_inverse[16] = {0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15};
 
 //----------------------------------------------------------------------------------------------------------------------------
-// Public functions
-//----------------------------------------------------------------------------------------------------------------------------
-
-//----------------------------------------------------------------------------------------------------------------------------
-size_t crunch_min_size(void)
-{
-    return sizeof(entry) * HASHMAP_SIZE;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-size_t bc1_crunch(void* cruncher_memory, const void* input, uint32_t width, uint32_t height, void* output, size_t length)
+size_t bc1_crunch(void* cruncher_memory, const void* input, size_t element_size, uint32_t width, uint32_t height, void* output, size_t length)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
 
-    bc1_block* blocks = (bc1_block*) input;
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
 
@@ -566,7 +563,7 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, uint32_t width, uint
     entry* hashmap = (entry*) cruncher_memory;
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size;
-    build_top_table(hashmap, blocks, height_blocks*width_blocks, top_table, &top_table_size);
+    build_top_table(hashmap, input, element_size, height_blocks*width_blocks, top_table, &top_table_size);
     sort_top_table(top_table, top_table_size);
 
     // write the table
@@ -598,15 +595,15 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, uint32_t width, uint
     model_init(&color_reference, 2);
 
     bc1_block empty_block = {0};
-    bc1_block* previous = &empty_block;
+    const bc1_block* previous = &empty_block;
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
             // zig-zag pattern delta compression for colors
-            bc1_block* current = (y&1) ? &blocks[y * width_blocks + x] : &blocks[y * width_blocks + width_blocks-x-1];
-            bc1_block* up = (y>0) ? current - width_blocks : NULL;
+            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
+            const bc1_block* current = get_block(input, element_size, width_blocks, zigzag_x, y);
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t current_red, current_green, current_blue;
@@ -617,6 +614,7 @@ size_t bc1_crunch(void* cruncher_memory, const void* input, uint32_t width, uint
 
                 if (y>0)
                 {
+                    const bc1_block* up = get_block(input, element_size, width_blocks, zigzag_x, y-1);
                     uint8_t up_red, up_green, up_blue;
                     bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
 
@@ -777,7 +775,7 @@ size_t bc4_crunch(void* cruncher_memory, const void* input, uint32_t width, uint
     model_init(&dict_reference, DICTIONARY_SIZE);
 
     bc4_block* blocks = (bc4_block*) input;
-    bc4_block empty_block = {0};
+    bc4_block empty_block = {.color = {0, 128}};
     bc4_block* previous = &empty_block;
 
     // dictionary initialization
@@ -869,7 +867,7 @@ void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
     model_init(&dict_reference, DICTIONARY_SIZE);
 
     bc4_block* blocks = (bc4_block*) output;
-    bc4_block empty_block = {0};
+    bc4_block empty_block = {.color = {0, 128}};
     bc4_block* previous = &empty_block;
 
     // dictionary initialization
@@ -923,5 +921,40 @@ void bc4_decrunch(const void* input, size_t length, uint32_t width, uint32_t hei
             }
             previous = current;
         }
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+// Public functions
+//----------------------------------------------------------------------------------------------------------------------------
+
+//----------------------------------------------------------------------------------------------------------------------------
+size_t crunch_min_size(void)
+{
+    return sizeof(entry) * HASHMAP_SIZE;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint32_t height, enum bc_format format, void* output, size_t length)
+{
+    assert(cruncher_memory != NULL && "bc_crunch needs memory to run, allocate a buffer of size crunch_min_size()");
+    assert(input != NULL);
+    switch(format)
+    {
+    case bc1 : return bc1_crunch(cruncher_memory, input, sizeof(bc1_block), width, height, output, length);
+    case bc4 : return bc4_crunch(cruncher_memory, input, width, height, output, length);
+    default: return 0;
+    }
+    return 0;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, enum bc_format format, void* output)
+{
+    switch(format)
+    {
+    case bc1 : return bc1_decrunch(input, length, width, height, output);
+    case bc4 : return bc4_decrunch(input, length, width, height, output);
+    default: break;
     }
 }
