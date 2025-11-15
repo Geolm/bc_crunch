@@ -78,3 +78,9 @@ Soon to be added...
 * ./test
 
 More tests will be added soon.
+
+## FAQ
+
+#### How can I compress a texture with all mipmaps
+
+Right now you need to call bc_crunch separately for each mip level. I may add a helper later, but I want to keep the encoder simple and stateless, without any mip-level awareness or cross-mip data.
