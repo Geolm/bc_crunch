@@ -27,12 +27,24 @@ static inline int iq_random( int* seed)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void extract_4x4_block(const uint8_t* rgba, uint32_t width, uint32_t x, uint32_t y, uint8_t block[64])
+static inline void extract_4x4_rgba_block(const uint8_t* rgba, uint32_t width, uint32_t x, uint32_t y, uint8_t block[64])
 {
     for (uint32_t j = 0; j < 4; j++)
     {
         const uint8_t* src = &rgba[(y + j) * width * 4 + x * 4];
         memcpy(&block[j * 4 * 4], src, 16);
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+static inline void extract_4x4_red_block(const uint8_t* rgba, uint32_t width, uint32_t x, uint32_t y, uint8_t block[16])
+{
+    for (uint32_t j = 0; j < 4; j++)
+    {
+        for(uint32_t i=0; i<4; ++i)
+        {
+            block[j * 4 + i] = rgba[((y + j) * width + (x + i)) * 4];
+        }
     }
 }
 
@@ -53,7 +65,7 @@ float test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
         for(uint32_t x=0; x<width/4; ++x)
         {
             uint8_t block_image[64];
-            extract_4x4_block(rgba, width, x*4, y*4, block_image);
+            extract_4x4_rgba_block(rgba, width, x*4, y*4, block_image);
             stb_compress_dxt_block(&bc1_texture[8 * block_index], block_image, 0, STB_DXT_HIGHQUAL);
             block_index++;
         }
@@ -89,6 +101,8 @@ bool test_bc3(const char* filename)
 {
     uint32_t width, height, num_channels;
 
+    arena_reset(&g_arena);
+
     fprintf(stdout, "\nopening %s\n", filename);
 
     unsigned char *data = stbi_load(filename, (int*)&width, (int*)&height, (int*)&num_channels, 4);
@@ -107,13 +121,11 @@ bool test_bc3(const char* filename)
         for(uint32_t x=0; x<width/4; ++x)
         {
             uint8_t block_image[128];
-            extract_4x4_block(data, width, x*4, y*4, block_image);
+            extract_4x4_rgba_block(data, width, x*4, y*4, block_image);
             stb_compress_dxt_block(&bc3_texture[16 * block_index], block_image, 1, STB_DXT_HIGHQUAL);
             block_index++;
         }
     }
-
-    arena_reset(&g_arena);
 
     void* crunched_texture = arena_alloc(&g_arena, bc3_size * 2);
     size_t crunched_size = bc_crunch(cruncher_memory, bc3_texture, width, height, bc3, crunched_texture, bc3_size*2);
@@ -128,6 +140,62 @@ bool test_bc3(const char* filename)
     for(uint32_t i=0; i<bc3_size; ++i)
     {
         if (uncompressed_texture[i] != bc3_texture[i])
+        {
+            fprintf(stdout, "failed, divergence at the %uth bytes\n", i);
+            return false;
+        }
+    }
+
+    fprintf(stdout, "ok\n");
+    stbi_image_free(data);
+
+    return true;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+bool test_bc4(const char* filename)
+{
+    uint32_t width, height, num_channels;
+
+    arena_reset(&g_arena);
+
+    fprintf(stdout, "\nopening %s\n", filename);
+
+    unsigned char *data = stbi_load(filename, (int*)&width, (int*)&height, (int*)&num_channels, 4);
+
+    fprintf(stdout, "width : %d height :%d num_channels :%d\n", width, height, num_channels);
+
+    if (data == NULL)
+        return false;
+
+    uint32_t bc4_size = (width * height) / 2;
+    uint8_t* bc4_texture = arena_alloc(&g_arena, bc4_size);
+
+    uint32_t block_index=0;
+    for(uint32_t y=0; y<height/4; ++y)
+    {
+        for(uint32_t x=0; x<width/4; ++x)
+        {
+            uint8_t block_image[64];
+            extract_4x4_red_block(data, width, x*4, y*4, block_image);
+            stb_compress_bc4_block(&bc4_texture[8 * block_index], block_image);
+            block_index++;
+        }
+    }
+
+    void* crunched_texture = arena_alloc(&g_arena, bc4_size * 2);
+    size_t crunched_size = bc_crunch(cruncher_memory, bc4_texture, width, height, bc4, crunched_texture, bc4_size*2);
+    float ratio = (float) bc4_size / (float) crunched_size;
+
+    fprintf(stdout, "BC4 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc4_size, crunched_size, ratio); 
+
+    uint8_t* uncompressed_texture = arena_alloc(&g_arena, bc4_size);
+    bc_decrunch(crunched_texture, crunched_size, width, height, bc4, uncompressed_texture);
+
+    fprintf(stdout, "comparing decrushed vs original : ");
+    for(uint32_t i=0; i<bc4_size; ++i)
+    {
+        if (uncompressed_texture[i] != bc4_texture[i])
         {
             fprintf(stdout, "failed, divergence at the %uth bytes\n", i);
             return false;
@@ -363,8 +431,19 @@ int main(void)
 
     fprintf(stdout, "ok\n\n");
 
+    if (!test_bc4("../textures/mask.png"))
+        return -1;
 
-    fprintf(stdout, "-----------------------------------\n");
+    if (!test_bc4("../textures/Cloud_Mask.png"))
+        return -1;
+
+    if (!test_bc4("../textures/heightmap.png"))
+        return -1;
+
+    if (!test_bc4("../textures/ambient_occlusion.png"))
+        return -1;
+
+    fprintf(stdout, "\n\n-----------------------------------\n");
     fprintf(stdout, "| BC3 tests                       |\n");
     fprintf(stdout, "-----------------------------------\n\n");
 
