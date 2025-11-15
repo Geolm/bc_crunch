@@ -67,3 +67,14 @@ Soon to be added...
 - BC3 is just (BC1 + BC4) — no extra logic  
 - BC5 is a dual BC4 channels
 
+
+## How to build tests
+
+* open a terminal in the folder
+* mkdir build
+* cd build
+* cmake -DCMAKE_BUILD_TYPE=Release ..
+* cmake --build .
+* ./test
+
+More tests will be added soon.
