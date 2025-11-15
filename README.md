@@ -24,7 +24,31 @@ This is *not* another general-purpose compressor.
 
 ## Benchmark
 
-Soon to be added.
+### BC1 benchmarks
+
+Average compression ratio : 1.493586
+
+| Category       | # Samples | Original BC1 Size (bytes) | Avg Crunched Size (bytes) | Avg Compression Ratio |
+|----------------|-----------|---------------------------|---------------------------|---------------------|
+| Kodak photos   | 24        | 196,608                   | 136,254                   | 1.44×               |
+| Dirt           | 20        | 131,072                   | 105,386                   | 1.24×               |
+| Wood           | 20        | 131,072                   | 79,306                    | 1.65×               |
+| Elements       | 20        | 131,072                   | 90,412                    | 1.45×               |
+| Brick          | 20        | 131,072                   | 88,212                    | 1.49×               |
+| Metal          | 20        | 131,072                   | 87,132                    | 1.51×               |
+| Plaster        | 20        | 131,072                   | 99,118                    | 1.33×               |
+| Stone          | 20        | 131,072                   | 97,014                    | 1.35×               |
+| Tile           | 20        | 131,072                   | 101,087                   | 1.30×               |
+| Blaz Tree      | 7         | 32,768–32,768             | 16,900                    | 1.84×               |
+| SW Tree        | 7         | 20,480–32,768             | 14,227                    | 2.08×               |
+| pkf Concrete   | 4         | 32,768                    | 24,583                    | 1.33×               |
+| pk02 Floor     | 20        | 32,768–524,288            | 100,604                   | 1.83×               |
+| pk02 Trim      | 5         | 4,096–131,072             | 11,777                    | 1.89×               |
+| Rock           | 4         | 524,288                   | 412,365                   | 1.27×               |
+| Brick Large    | 2         | 524,288                   | 408,746                   | 1.28×               |
+
+
+### BC4 benchmarks
 
 ## Technical details
 
