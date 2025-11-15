@@ -406,6 +406,21 @@ static inline uint32_t hash32(uint32_t x)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+int compare_entries(const void* a, const void* b)
+{
+    const entry* entry_a = (const entry*) a;
+    const entry* entry_b = (const entry*) b;
+
+    if (entry_a->key < entry_b->key)
+        return -1;
+
+    if (entry_a->key > entry_b->key)
+        return 1;
+
+    return 0;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t num_blocks, entry* output, uint32_t* num_entries)
 {
     // clear the hashmap
@@ -478,6 +493,8 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
         if (output[i].count>0)
             (*num_entries)++;
     }
+
+    qsort(output, *num_entries, sizeof(entry), compare_entries);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -502,27 +519,6 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
         }
     }
     return best_index;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-int compare_entries(const void* a, const void* b)
-{
-    const entry* entry_a = (const entry*) a;
-    const entry* entry_b = (const entry*) b;
-
-    if (entry_a->key < entry_b->key)
-        return -1;
-
-    if (entry_a->key > entry_b->key)
-        return 1;
-
-    return 0;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-void sort_top_table(entry* table, uint32_t table_size)
-{
-    qsort(table, table_size, sizeof(entry), compare_entries);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -569,7 +565,6 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     entry top_table[TABLE_SIZE];
     uint32_t top_table_size;
     build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
-    sort_top_table(top_table, top_table_size);
 
     // write the table
     range_model table_entry;
