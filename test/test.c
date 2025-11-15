@@ -443,6 +443,9 @@ int main(void)
     if (!test_bc4("../textures/ambient_occlusion.png"))
         return -1;
 
+    if (!test_bc4("../textures/ambient_occlusion2.png"))
+        return -1;
+
     fprintf(stdout, "\n\n-----------------------------------\n");
     fprintf(stdout, "| BC3 tests                       |\n");
     fprintf(stdout, "-----------------------------------\n\n");
