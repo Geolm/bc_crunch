@@ -40,12 +40,8 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 
 #include <assert.h>
 #include "bc_crunch.h"
-
 #include <stdbool.h>
 #include <stdlib.h>
-
-#include <stdio.h>      // TODO : not needed remove it!
-
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
