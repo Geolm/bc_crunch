@@ -949,23 +949,31 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
     case bc1 : 
         {
             bc1_crunch(&codec, cruncher_memory, input, sizeof(bc1_block), width, height);
-            return enc_done(&codec);
+            break;
         }
     case bc3 : 
         {
             size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
             bc4_crunch(&codec, cruncher_memory, input, block_size, width, height);
             bc1_crunch(&codec, cruncher_memory, ptr_shift_const(input, sizeof(bc4_block)), block_size, width, height);
-            return enc_done(&codec);
+            break;
         }
     case bc4 : 
         {
             bc4_crunch(&codec, cruncher_memory, input, sizeof(bc4_block), width, height);
-            return enc_done(&codec);
+            break;
         }
-    default: return 0;
+    case bc5 :
+        {
+            size_t block_size = sizeof(bc4_block) * 2;
+            bc4_crunch(&codec, cruncher_memory, input, block_size, width, height);
+            bc4_crunch(&codec, cruncher_memory, ptr_shift_const(input, sizeof(bc4_block)), block_size, width, height);
+            break;
+        }
+
+    default: break;
     }
-    return 0;
+    return enc_done(&codec);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -985,6 +993,13 @@ void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t heig
             break;
         }
     case bc4 : bc4_decrunch(&codec, width, height, output, sizeof(bc4_block)); break;
+    case bc5 :
+        {
+            size_t block_size = sizeof(bc4_block) * 2;
+            bc4_decrunch(&codec, width, height, output, block_size);
+            bc4_decrunch(&codec, width, height, ptr_shift(output, sizeof(bc4_block)), block_size);
+            break;
+        }
     default: break;
     }
 }
