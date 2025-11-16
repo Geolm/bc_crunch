@@ -9,7 +9,7 @@
 - ~700 LOC total (single-file encoder/decoder, no build system tricks)
 - No malloc, no external libs, no threads, no SIMD requirement  
 - Deterministic, bit-exact reconstruction
-- Fully unit-tested with cross-validation and fuzz passes  
+- Fully tested with bytes-per-bytes comparison
 - Focused on production textures: albedo, masks, normals, heightmaps, etc.
 - GPU-ready output: decompressed blocks are written in standard BC1/BC4/BC3/BC5 format, ready to be uploaded directly to GPU memory (or directly written in shared memory)
 - No extra memory for decompression: only the encoder needs a temporary buffer; decoding writes straight to the output buffer.
@@ -18,7 +18,9 @@ This is *not* another general-purpose compressor. `bc_crunch` is specialized for
 
 ---
 
-## Benchmark
+## Benchmarks
+
+Compression ratio naturally depends on the input content. Repetitive patterns, smooth gradients, and large uniform regions compress very well, while randomness or high-frequency noise significantly reduces efficiency (e.g., dirt textures are typically very noisy).
 
 ### BC1 benchmarks
 
@@ -46,7 +48,18 @@ Average compression ratio : 1.493586
 
 ### BC4 benchmarks
 
-Soon to be added...
+Average compression ratio : 3.1960
+
+| Texture                | Resolution | BC4 Size (bytes) | Crunched Size (bytes) | Ratio     |
+| ---------------------- | ---------- | ---------------- | --------------------- | --------- |
+| Satoshi font atlas     | 256x256    |  32,768          | 9947              | 3.29× |
+| mask.png               | 512×512    | 131,072          | 20,407            | 6.42× |
+| Cloud_Mask.png         | 512×512    | 131,072          | 80,264            | 1.63× |
+| heightmap.png          | 2048×2048  | 2,097,152        | 441,560           | 4.75× |
+| ambient_occlusion.png  | 1024×1024  | 524,288          | 391,837           | 1.34× |
+| ambient_occlusion2.png | 1024×1024  | 524,288          | 301,542           | 1.74× |
+
+---
 
 ## Technical details
 
