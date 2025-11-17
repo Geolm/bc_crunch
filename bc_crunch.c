@@ -579,7 +579,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     for(uint32_t i=1; i<top_table_size; ++i)
     {
         // table is sorted from small to big, so diff is always positive
-        uint32_t diff = top_table[i] - top_table[i-1];
+        uint32_t diff = (uint32_t)top_table[i] - (uint32_t)top_table[i-1];
 
         for(uint32_t j=0; j<4; ++j)
             enc_put(codec, &table_entry, (diff >> (j*8)) & 0xff);
