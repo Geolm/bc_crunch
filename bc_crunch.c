@@ -67,9 +67,12 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #if defined(_MSC_VER)
     #include <intrin.h>
     #pragma intrinsic(__popcnt)
+    #pragma intrinsic(__popcnt64)
     #define popcount(x) __popcnt(x)
+    #define popcount64(x) ((int)__popcnt64(x))
 #else
     #define popcount(x) __builtin_popcount(x)
+    #define popcount64(x) __builtin_popcountll(x)
 #endif
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -524,6 +527,31 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint64_t bitfield)
+{
+    uint32_t best_index = 0;
+    uint32_t best_score = UINT32_MAX;
+
+    for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
+    {
+        uint64_t delta = dictionary[i] ^ bitfield;
+        if (delta == 0)
+            return i;
+
+        uint32_t score = popcount64(delta);
+        if (score < best_score ||
+           ((score == best_score) && (dictionary[i] > dictionary[best_index])))
+        {
+            best_score = score;
+            best_index = i;
+        }
+    }
+
+    // combine popcount and index
+    return ((best_score&0xffff)<<16) | (best_index&0xffff);
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
 {
     uint32_t bit_offset = pixel_index * 3;
@@ -762,12 +790,13 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-    range_model color_reference, first_index, indices, use_dict, dict_reference;
+    range_model color_reference, first_index, indices, use_dict, dict_reference, dict_delta;
     model_init(&color_reference, 2);
     model_init(&first_index, 1<<3);
     model_init(&indices, 1<<BC4_INDEX_NUM_BITS);
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
+    model_init(&dict_delta, 256);
 
     bc4_block empty_block = {.color = {0, 128}};
     const bc4_block* previous = &empty_block;
@@ -802,16 +831,19 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
             // search in the dictionary for the current bitfield
             uint64_t bitfield = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
-            uint32_t found_index = UINT32_MAX;
-            for(uint32_t j=0; j<DICTIONARY_SIZE && found_index == UINT32_MAX; ++j)
-                if (dictionary[j] == bitfield)
-                    found_index = j;
+            uint32_t dict_lookup = dictionary_nearest(dictionary, bitfield);
+            uint16_t score = dict_lookup>>16;
+            uint16_t found_index = dict_lookup&0xffff;
             
-            // found? just write the dictionary index
-            if (found_index != UINT32_MAX)
+            // found or similar? just write the dictionary index
+            if (score <= 6)
             {
                 enc_put(codec, &use_dict, 1);
                 enc_put(codec, &dict_reference, found_index);
+                
+                uint64_t reference = dictionary[found_index];
+                for(uint32_t j=0; j<6; ++j)
+                    enc_put(codec, &dict_delta, ((reference>>(j*8))&0xff) ^ ((bitfield>>(j*8))&0xff));
             }
             else
             {
@@ -822,14 +854,14 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 // write the indices with local difference delta encoded
                 enc_put(codec, &use_dict, 0);
 
-                uint8_t previous = bc4_get_index(current, block_zigzag[0]);
-                enc_put(codec, &first_index, previous);
+                uint8_t block_previous = bc4_get_index(current, 0);
+                enc_put(codec, &first_index, block_previous);
 
                 for(uint32_t j=1; j<16; ++j)
                 {
                     uint8_t data = bc4_get_index(current, block_zigzag[j]);
-                    enc_put(codec, &indices, previous ^ data);
-                    previous = data;
+                    enc_put(codec, &indices, block_previous ^ data);
+                    block_previous = data;
                 }
             }
             previous = current;
@@ -849,12 +881,13 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-    range_model color_reference, first_index, indices, use_dict, dict_reference;
+    range_model color_reference, first_index, indices, use_dict, dict_reference, dict_delta;
     model_init(&color_reference, 2);
     model_init(&first_index, 1<<3);
     model_init(&indices, 1<<BC4_INDEX_NUM_BITS);
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
+    model_init(&dict_delta, 256);
 
     bc4_block empty_block = {.color = {0, 128}};
     bc4_block* previous = &empty_block;
@@ -888,22 +921,31 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
             if (dec_get(codec, &use_dict))
             {
                 // data should be in the dictionary
-                uint64_t bitfield = dictionary[dec_get(codec, &dict_reference)];
-                current->indices[0] = (bitfield>>32) & 0xffff;
-                current->indices[1] = (bitfield>>16) & 0xffff;
+                uint64_t reference = dictionary[dec_get(codec, &dict_reference)];
+                uint64_t bitfield = 0;
+    
+                for(uint32_t j=0; j<6; ++j)
+                {
+                    uint64_t byte = (uint64_t)dec_get(codec, &dict_delta);
+                    bitfield |= (byte << (j*8));
+                }
+
+                bitfield ^= reference;
+                current->indices[0] = ((bitfield>>32) & 0xffff);
+                current->indices[1] = ((bitfield>>16) & 0xffff);
                 current->indices[2] = bitfield & 0xffff;
             }
             else
             {
-                uint8_t previous = dec_get(codec, &first_index);
-                bc4_set_index(current, block_zigzag[0], previous);
+                uint8_t block_previous = dec_get(codec, &first_index);
+                bc4_set_index(current, 0, block_previous);
 
                 for(uint32_t j=1; j<16; ++j)
                 {
                     uint8_t delta = dec_get(codec, &indices);
-                    uint8_t data = previous ^ delta;
+                    uint8_t data = block_previous ^ delta;
                     bc4_set_index(current, block_zigzag[j], data);
-                    previous = data;
+                    block_previous = data;
                 }
 
                 // store the entry in the dictionary
@@ -923,6 +965,7 @@ up-left-xor : BC4 average compression ratio : 1.196489
 xor endpoints : BC4 average compression ratio : 1.124062
 just left or up : BC4 average compression ratio : 1.211573
 block zig-zag xor : BC4 average compression ratio : 1.211644
+xor-delta dictionary : BC4 average compression ratio : 1.227614
 */
 
 

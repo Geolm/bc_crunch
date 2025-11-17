@@ -47,14 +47,17 @@ Average compression ratio : 1.493586
 
 [BC1 textures samples](./textures/bc1/)
 
+BC1 decompression has been measured at **35 MB/s** on an M4. Some range encoder optimizations were removed to keep the library small, but they could be reinstated.
+
 ### BC4 benchmarks
 
-Average compression ratio : 1.211644
+Average compression ratio : 1.227614
 
 | Category      | Samples | Uncompressed (bytes) | Avg Compressed (bytes) | Avg Compression Ratio |
-|---------------|----------|-----------------------|--------------------------|------------------------|
-| AO            | 4        | 524,288               | 472,594                 | 1.109384               |
-| Displacement  | 4        | 524,288               | 400,749                 | 1.308269               |
+|---------------|---------|---------------------|-----------------------|---------------------|
+| AO            | 4       | 524,288             | 472,933               | 1.110720            |
+| Displacement  | 4       | 524,288             | 392,916               | 1.328257            |
+
 
 [BC4 textures samples](./textures/bc4/)
 
@@ -71,9 +74,10 @@ Average compression ratio : 1.211644
 
 ### BC4
 - Zigzag traversal  
-- Cyclic wrapped endpoint deltas (mod 256)
+- Cyclic wrapped endpoint deltas (mod 256) using left/up predictors
 - 256-entry sliding dictionary
-- Morton-order delta path for index fallback  
+- Nearest-match selection via popcount distance
+- Block zigzag traversal with xor-delta encoding for index fallback  
 
 ### Composite Formats
 - BC3 is just (BC1 + BC4) — no extra logic  
