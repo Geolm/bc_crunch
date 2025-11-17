@@ -77,7 +77,7 @@ Average compression ratio : 1.150844
 | **Average**                       | -     | -      | -               | -                    | 1.151           |
 
 
-[BC4 textures samples](./textures/bc5/)
+[BC5 textures samples](./textures/bc5/)
 
 ---
 
