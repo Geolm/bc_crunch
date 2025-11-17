@@ -48,16 +48,7 @@ Average compression ratio : 1.493586
 
 ### BC4 benchmarks
 
-Average compression ratio : 3.1960
-
-| Texture                | Resolution | BC4 Size (bytes) | Crunched Size (bytes) | Ratio     |
-| ---------------------- | ---------- | ---------------- | --------------------- | --------- |
-| Satoshi font atlas     | 256x256    |  32,768          | 9947              | 3.29× |
-| mask.png               | 512×512    | 131,072          | 20,407            | 6.42× |
-| Cloud_Mask.png         | 512×512    | 131,072          | 80,264            | 1.63× |
-| heightmap.png          | 2048×2048  | 2,097,152        | 441,560           | 4.75× |
-| ambient_occlusion.png  | 1024×1024  | 524,288          | 391,837           | 1.34× |
-| ambient_occlusion2.png | 1024×1024  | 524,288          | 301,542           | 1.74× |
+Soon to be added, I'm still working on improving the compression ratio with real-cases texture (ao, displacement and normalmap).
 
 ---
 
