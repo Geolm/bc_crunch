@@ -61,6 +61,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0,r1,r2) ( ((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2) )
 #define BC4_COLOR_NUM_BITS (8)
+#define BC4_INDEX_NUM_BITS (3)
 
 #if defined(_MSC_VER)
     #include <intrin.h>
@@ -522,8 +523,9 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
+static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t x, uint32_t y)
 {
+    uint32_t pixel_index = y * 4 + x;
     uint32_t bit_offset = pixel_index * 3;
     uint64_t bits = ((uint64_t)b->indices[0]) | ((uint64_t)b->indices[1] << 16) | ((uint64_t)b->indices[2] << 32);
     uint8_t index = (uint8_t)((bits >> bit_offset) & 0x7);
@@ -531,25 +533,23 @@ static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t index)
+static inline void bc4_set_index(bc4_block* b, uint32_t x, uint32_t y, uint8_t data)
 {
+    uint32_t pixel_index = y * 4 + x;
     uint32_t bit_offset = pixel_index * 3;
     uint32_t word_index = bit_offset >> 4;
     uint32_t bit_in_word = bit_offset & 0xF;
 
     uint16_t mask = 0x7 << bit_in_word;
-    b->indices[word_index] = (b->indices[word_index] & ~mask) | ((index & 0x7) << bit_in_word);
+    b->indices[word_index] = (b->indices[word_index] & ~mask) | ((data & 0x7) << bit_in_word);
 
     // if the 3 bits spill into the next word
     if (bit_in_word > 13)  // last 2 or 1 bits spill
     {
-        uint16_t spill_bits = (index & 0x7) >> (16 - bit_in_word);
+        uint16_t spill_bits = (data & 0x7) >> (16 - bit_in_word);
         b->indices[word_index + 1] = (b->indices[word_index + 1] & ~(0x7 >> (16 - bit_in_word))) | spill_bits;
     }
 }
-
-//----------------------------------------------------------------------------------------------------------------------------
-static const uint32_t morton_inverse[16] = {0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15};
 
 //----------------------------------------------------------------------------------------------------------------------------
 void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
@@ -764,7 +764,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     range_model color_reference, first_index, indices, use_dict, dict_reference;
     model_init(&color_reference, 2);
     model_init(&first_index, 1<<3);
-    model_init(&indices, 1<<4);
+    model_init(&indices, 1<<BC4_INDEX_NUM_BITS);
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
 
@@ -821,15 +821,34 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 // write the indices with local difference delta encoded
                 enc_put(codec, &use_dict, 0);
 
-                uint8_t prev_data = bc4_get_index(current, 0);
-                enc_put(codec, &first_index, prev_data);
+                uint8_t left = bc4_get_index(current, 0, 0);
+                enc_put(codec, &first_index, left);
 
-                // morton delta compress the indices
-                for(uint32_t j=1; j<16; ++j)
+                // first row, only use left
+                for(uint32_t block_x=1; block_x<4; ++block_x)
                 {
-                    uint8_t data = bc4_get_index(current, morton_inverse[j]);
-                    enc_put(codec, &indices, delta_encode(prev_data, data, 4));
-                    prev_data = data;
+                    uint8_t data = bc4_get_index(current, block_x, 0);
+                    enc_put(codec, &indices, left ^ data);
+                    left = data;
+                }
+
+                for(uint32_t block_y=1; block_y<4; ++block_y)
+                {
+                    // first is predicted from up
+                    uint8_t prediction = bc4_get_index(current, 0, block_y-1);
+                    uint8_t data = bc4_get_index(current, 0, block_y);
+                    enc_put(codec, &indices, prediction ^ data);
+
+                    // others use left, up and top-left to predict
+                    for(uint32_t block_x=1; block_x<4; ++block_x)
+                    {
+                        uint8_t up = bc4_get_index(current, block_x, block_y-1);
+                        uint8_t left = bc4_get_index(current, block_x-1, block_y);
+                        uint8_t up_left = bc4_get_index(current, block_x-1, block_y-1);
+                        uint8_t prediction = up ^ left ^ up_left;
+                        data = bc4_get_index(current, block_x, block_y);
+                        enc_put(codec, &indices, prediction ^ data);
+                    }
                 }
             }
             previous = current;
@@ -852,7 +871,7 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     range_model color_reference, first_index, indices, use_dict, dict_reference;
     model_init(&color_reference, 2);
     model_init(&first_index, 1<<3);
-    model_init(&indices, 1<<4);
+    model_init(&indices, 1<<BC4_INDEX_NUM_BITS);
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
 
@@ -895,16 +914,37 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
             }
             else
             {
-                uint8_t prev_data = dec_get(codec, &first_index);
-                bc4_set_index(current, 0, prev_data);
+                uint8_t left = dec_get(codec, &first_index);
+                bc4_set_index(current, 0, 0, left);
 
-                // morton delta compress the indices
-                for(uint32_t j=1; j<16; ++j)
+                // first row, only use left
+                for(uint32_t block_x=1; block_x<4; ++block_x)
                 {
                     uint8_t delta = dec_get(codec, &indices);
-                    uint8_t data = delta_decode(prev_data, delta, 4);
-                    bc4_set_index(current, morton_inverse[j], data);
-                    prev_data = data;
+                    uint8_t data = left ^ delta;
+                    bc4_set_index(current, block_x, 0, data);
+                    left = data;
+                }
+
+                for(uint32_t block_y=1; block_y<4; ++block_y)
+                {
+                    // first is predicted from up
+                    uint8_t prediction = bc4_get_index(current, 0, block_y-1);
+                    uint8_t delta = dec_get(codec, &indices);
+                    uint8_t data = prediction ^ delta;
+                    bc4_set_index(current, 0, block_y, data);
+
+                    // others use left, up and top-left to predict
+                    for(uint32_t block_x=1; block_x<4; ++block_x)
+                    {
+                        left = bc4_get_index(current, block_x-1, block_y);
+                        uint8_t up = bc4_get_index(current, block_x, block_y-1);
+                        uint8_t up_left = bc4_get_index(current, block_x-1, block_y-1);
+                        uint8_t prediction = up ^ left ^ up_left;
+                        uint8_t delta = dec_get(codec, &indices);
+                        uint8_t data = prediction ^ delta;
+                        bc4_set_index(current, block_x, block_y, data);
+                    }
                 }
 
                 // store the entry in the dictionary
@@ -915,6 +955,17 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
         }
     }
 }
+
+/*
+
+base : BC4 average compression ratio : 1.051032
+zig-zag : BC4 average compression ratio : 1.090952
+up-left-xor : BC4 average compression ratio : 1.196489
+xor endpoints : BC4 average compression ratio : 1.124062
+
+
+*/
+
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Public functions
