@@ -59,7 +59,8 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define GREEN_DELTA_NUM_BITS (7)
 #define BLUE_DELTA_NUM_BITS (6)
 #define DICTIONARY_SIZE (256)
-#define MAKE48(r0,r1,r2) ( ((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2) )
+#define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
+
 #define BC4_COLOR_NUM_BITS (8)
 #define BC4_INDEX_NUM_BITS (3)
 
@@ -523,9 +524,8 @@ static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t x, uint32_t y)
+static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
 {
-    uint32_t pixel_index = y * 4 + x;
     uint32_t bit_offset = pixel_index * 3;
     uint64_t bits = ((uint64_t)b->indices[0]) | ((uint64_t)b->indices[1] << 16) | ((uint64_t)b->indices[2] << 32);
     uint8_t index = (uint8_t)((bits >> bit_offset) & 0x7);
@@ -533,9 +533,8 @@ static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t x, uint32_t y)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline void bc4_set_index(bc4_block* b, uint32_t x, uint32_t y, uint8_t data)
+static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t data)
 {
-    uint32_t pixel_index = y * 4 + x;
     uint32_t bit_offset = pixel_index * 3;
     uint32_t word_index = bit_offset >> 4;
     uint32_t bit_in_word = bit_offset & 0xF;
@@ -748,6 +747,8 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     }
 }
 
+static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
+
 //----------------------------------------------------------------------------------------------------------------------------
 void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
@@ -821,34 +822,14 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 // write the indices with local difference delta encoded
                 enc_put(codec, &use_dict, 0);
 
-                uint8_t left = bc4_get_index(current, 0, 0);
-                enc_put(codec, &first_index, left);
+                uint8_t previous = bc4_get_index(current, block_zigzag[0]);
+                enc_put(codec, &first_index, previous);
 
-                // first row, only use left
-                for(uint32_t block_x=1; block_x<4; ++block_x)
+                for(uint32_t j=1; j<16; ++j)
                 {
-                    uint8_t data = bc4_get_index(current, block_x, 0);
-                    enc_put(codec, &indices, left ^ data);
-                    left = data;
-                }
-
-                for(uint32_t block_y=1; block_y<4; ++block_y)
-                {
-                    // first is predicted from up
-                    uint8_t prediction = bc4_get_index(current, 0, block_y-1);
-                    uint8_t data = bc4_get_index(current, 0, block_y);
-                    enc_put(codec, &indices, prediction ^ data);
-
-                    // others use left, up and top-left to predict
-                    for(uint32_t block_x=1; block_x<4; ++block_x)
-                    {
-                        uint8_t up = bc4_get_index(current, block_x, block_y-1);
-                        uint8_t left = bc4_get_index(current, block_x-1, block_y);
-                        uint8_t up_left = bc4_get_index(current, block_x-1, block_y-1);
-                        uint8_t prediction = up ^ left ^ up_left;
-                        data = bc4_get_index(current, block_x, block_y);
-                        enc_put(codec, &indices, prediction ^ data);
-                    }
+                    uint8_t data = bc4_get_index(current, block_zigzag[j]);
+                    enc_put(codec, &indices, previous ^ data);
+                    previous = data;
                 }
             }
             previous = current;
@@ -914,37 +895,15 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
             }
             else
             {
-                uint8_t left = dec_get(codec, &first_index);
-                bc4_set_index(current, 0, 0, left);
+                uint8_t previous = dec_get(codec, &first_index);
+                bc4_set_index(current, block_zigzag[0], previous);
 
-                // first row, only use left
-                for(uint32_t block_x=1; block_x<4; ++block_x)
+                for(uint32_t j=1; j<16; ++j)
                 {
                     uint8_t delta = dec_get(codec, &indices);
-                    uint8_t data = left ^ delta;
-                    bc4_set_index(current, block_x, 0, data);
-                    left = data;
-                }
-
-                for(uint32_t block_y=1; block_y<4; ++block_y)
-                {
-                    // first is predicted from up
-                    uint8_t prediction = bc4_get_index(current, 0, block_y-1);
-                    uint8_t delta = dec_get(codec, &indices);
-                    uint8_t data = prediction ^ delta;
-                    bc4_set_index(current, 0, block_y, data);
-
-                    // others use left, up and top-left to predict
-                    for(uint32_t block_x=1; block_x<4; ++block_x)
-                    {
-                        left = bc4_get_index(current, block_x-1, block_y);
-                        uint8_t up = bc4_get_index(current, block_x, block_y-1);
-                        uint8_t up_left = bc4_get_index(current, block_x-1, block_y-1);
-                        uint8_t prediction = up ^ left ^ up_left;
-                        uint8_t delta = dec_get(codec, &indices);
-                        uint8_t data = prediction ^ delta;
-                        bc4_set_index(current, block_x, block_y, data);
-                    }
+                    uint8_t data = previous ^ delta;
+                    bc4_set_index(current, block_zigzag[j], data);
+                    previous = data;
                 }
 
                 // store the entry in the dictionary
@@ -962,8 +921,8 @@ base : BC4 average compression ratio : 1.051032
 zig-zag : BC4 average compression ratio : 1.090952
 up-left-xor : BC4 average compression ratio : 1.196489
 xor endpoints : BC4 average compression ratio : 1.124062
-
-
+just left or up : BC4 average compression ratio : 1.211573
+block zig-zag xor : BC4 average compression ratio : 1.211644
 */
 
 
