@@ -42,6 +42,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #include "bc_crunch.h"
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
@@ -815,6 +816,13 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 uint64_t reference = dictionary[found_index];
                 for(uint32_t j=0; j<6; ++j)
                     enc_put(codec, &dict_delta, ((reference>>(j*8))&0xff) ^ ((bitfield>>(j*8))&0xff));
+
+                if(found_index > 0)
+                {
+                    uint64_t temp = dictionary[found_index];
+                    memmove(&dictionary[1], &dictionary[0], found_index * sizeof(uint64_t));
+                    dictionary[0] = temp;
+                }
             }
             else
             {
@@ -892,7 +900,8 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
             if (dec_get(codec, &use_dict))
             {
                 // data should be in the dictionary
-                uint64_t reference = dictionary[dec_get(codec, &dict_reference)];
+                uint32_t found_index = dec_get(codec, &dict_reference);
+                uint64_t reference = dictionary[found_index];
                 uint64_t bitfield = 0;
     
                 for(uint32_t j=0; j<6; ++j)
@@ -905,6 +914,13 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                 current->indices[0] = ((bitfield>>32) & 0xffff);
                 current->indices[1] = ((bitfield>>16) & 0xffff);
                 current->indices[2] = bitfield & 0xffff;
+
+                if(found_index > 0)
+                {
+                    uint64_t temp = dictionary[found_index];
+                    memmove(&dictionary[1], &dictionary[0], found_index * sizeof(uint64_t));
+                    dictionary[0] = temp;
+                }
             }
             else
             {
@@ -929,14 +945,16 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
 }
 
 /*
+BC4 average compression ratio history
 
-base : BC4 average compression ratio : 1.051032
-zig-zag : BC4 average compression ratio : 1.090952
-up-left-xor : BC4 average compression ratio : 1.196489
-xor endpoints : BC4 average compression ratio : 1.124062
-just left or up : BC4 average compression ratio : 1.211573
-block zig-zag xor : BC4 average compression ratio : 1.211644
-xor-delta dictionary : BC4 average compression ratio : 1.227614
+base : 1.051032
+zig-zag : 1.090952
+up-left-xor : 1.196489
+xor endpoints : 1.124062
+just left or up : 1.211573
+block zig-zag xor : 1.211644
+xor-delta dictionary :  : 1.227614
+move-to-front dictionary : 1.232521
 */
 
 
