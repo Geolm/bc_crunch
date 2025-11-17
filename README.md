@@ -47,8 +47,6 @@ Average compression ratio : 1.493586
 
 [BC1 textures samples](./textures/bc1/)
 
-BC1 decompression has been measured at **35 MB/s** on an M4. Some range encoder optimizations were removed to keep the library small, but they could be reinstated.
-
 ### BC4 benchmarks
 
 Average compression ratio : 1.232521
@@ -78,6 +76,11 @@ Average compression ratio : 1.150844
 
 [BC5 textures samples](./textures/bc5/)
 
+### Performance
+
+Current focus is on compression ratio, but CPU performance benchmarks will be added soon.  
+Preliminary tests show BC1 decompression at **~35 MB/s** on an M4, but further profiling across formats and hardware is planned.
+
 ---
 
 ## Technical details
@@ -99,7 +102,7 @@ Average compression ratio : 1.150844
 
 ### Composite Formats
 - BC3 is just (BC1 + BC4) — no extra logic  
-- BC5 is a dual BC4 channels
+- BC5 is a dual independent BC4 channels
 
 ## How to build tests
 
