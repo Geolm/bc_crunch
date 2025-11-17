@@ -7,14 +7,13 @@
 `bc_crunch` is a tiny, dependency-free C99 library for *lossless* compression of GPU-compressed texture blocks **BC1, BC4, BC3, and BC5**.
 
 - ~700 LOC total (single-file encoder/decoder, no build system tricks)
-- No malloc, no external libs, no threads, no SIMD requirement  
-- Deterministic, bit-exact reconstruction
-- Fully tested with bytes-for-bytes comparison
+- No malloc, no external libs
+- Deterministic, bit-exact reconstruction, fully tested with bytes-for-bytes comparison
 - Focused on production textures: albedo, masks, normals, heightmaps, etc.
 - GPU-ready output: decompressed blocks are written in standard BC1/BC4/BC3/BC5 format, ready to be uploaded directly to GPU memory (or directly written in shared memory)
 - No extra memory for decompression: only the encoder needs a temporary buffer; decoding writes straight to the output buffer.
 
-This is *not* another general-purpose compressor. `bc_crunch` is specialized for already-compressed GPU formats — it exploits the internal structure of BC1/BC4 blocks, spatial patterns, endpoint deltas, popcount distances, and Morton-ordered indices to achieve significant size reductions with very low CPU cost.
+This is *not* another general-purpose compressor. `bc_crunch` is specialized for already-compressed GPU formats — it exploits the internal structure of BC1/BC4 blocks, spatial patterns, endpoint deltas, bitfield indices to achieve significant size reductions with very low CPU cost.
 
 ---
 
@@ -91,7 +90,7 @@ Average compression ratio : 1.150844
 - Delta-encoded index patches (no raw fallback)
 
 ### BC4
-- Zigzag traversal  
+- Zigzag block traversal  
 - Cyclic wrapped endpoint deltas (mod 256) using left/up predictors
 - 256-entry sliding dictionary
 - Move-to-front heuristic when hit
@@ -101,7 +100,6 @@ Average compression ratio : 1.150844
 ### Composite Formats
 - BC3 is just (BC1 + BC4) — no extra logic  
 - BC5 is a dual BC4 channels
-
 
 ## How to build tests
 
