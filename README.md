@@ -9,12 +9,12 @@
 - ~700 LOC total (single-file encoder/decoder, no build system tricks)
 - No malloc, no external libs, no threads, no SIMD requirement  
 - Deterministic, bit-exact reconstruction
-- Fully tested with bytes-per-bytes comparison
+- Fully tested with bytes-for-bytes comparison
 - Focused on production textures: albedo, masks, normals, heightmaps, etc.
 - GPU-ready output: decompressed blocks are written in standard BC1/BC4/BC3/BC5 format, ready to be uploaded directly to GPU memory (or directly written in shared memory)
 - No extra memory for decompression: only the encoder needs a temporary buffer; decoding writes straight to the output buffer.
 
-This is *not* another general-purpose compressor. `bc_crunch` is specialized for already-compressed GPU formats — it exploits the internal structure of BC1/BC4 blocks, spatial patterns, endpoint deltas, popcount distances, and Morton-ordered indices to achieve significant size reductions with extremely low CPU cost.
+This is *not* another general-purpose compressor. `bc_crunch` is specialized for already-compressed GPU formats — it exploits the internal structure of BC1/BC4 blocks, spatial patterns, endpoint deltas, popcount distances, and Morton-ordered indices to achieve significant size reductions with very low CPU cost.
 
 ---
 
