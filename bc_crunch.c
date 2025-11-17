@@ -60,18 +60,16 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define BLUE_DELTA_NUM_BITS (6)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
-
 #define BC4_COLOR_NUM_BITS (8)
 #define BC4_INDEX_NUM_BITS (3)
 
+static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
+
 #if defined(_MSC_VER)
     #include <intrin.h>
-    #pragma intrinsic(__popcnt)
     #pragma intrinsic(__popcnt64)
-    #define popcount(x) __popcnt(x)
     #define popcount64(x) ((int)__popcnt64(x))
 #else
-    #define popcount(x) __builtin_popcount(x)
     #define popcount64(x) __builtin_popcountll(x)
 #endif
 
@@ -413,20 +411,20 @@ static inline uint32_t hash32(uint32_t x)
 //----------------------------------------------------------------------------------------------------------------------------
 int compare_entries(const void* a, const void* b)
 {
-    const entry* entry_a = (const entry*) a;
-    const entry* entry_b = (const entry*) b;
+    uint64_t entry_a = *(const uint64_t*) a;
+    uint64_t entry_b = *(const uint64_t*) b;
 
-    if (entry_a->key < entry_b->key)
+    if (entry_a < entry_b)
         return -1;
 
-    if (entry_a->key > entry_b->key)
+    if (entry_a > entry_b)
         return 1;
 
     return 0;
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t num_blocks, entry* output, uint32_t* num_entries)
+void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t num_blocks, uint64_t* output, uint32_t* num_entries)
 {
     // clear the hashmap
     for(uint32_t i=0; i<HASHMAP_SIZE; ++i)
@@ -494,45 +492,21 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
     *num_entries = 0;
     for(uint32_t i=0; i<TABLE_SIZE; ++i)
     {
-        output[i] = table[TABLE_SIZE - i - 1];
-        if (output[i].count>0)
+        output[i] = table[TABLE_SIZE-i-1].key;
+        if (table[TABLE_SIZE-i-1].count>0)
             (*num_entries)++;
     }
 
-    qsort(output, *num_entries, sizeof(entry), compare_entries);
+    qsort(output, *num_entries, sizeof(uint64_t), compare_entries);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline uint32_t top_table_nearest(const entry* table, uint32_t table_size, uint32_t original_indices)
-{
-    uint32_t best_score = 32;
-    uint32_t best_index = 0;
-    for(uint32_t i=0; i<table_size; ++i)
-    {
-        uint32_t delta = table[i].key ^ original_indices;
-
-        // early exit if identical
-        if (delta == 0)
-            return i;
-
-        uint32_t score = popcount(delta);
-        if (score < best_score ||
-           ((score == best_score) && (table[i].key > table[best_index].key)))
-        {
-            best_score = score;
-            best_index = i;
-        }
-    }
-    return best_index;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint64_t bitfield)
+static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield)
 {
     uint32_t best_index = 0;
     uint32_t best_score = UINT32_MAX;
 
-    for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
+    for(uint32_t i=0; i<table_size; ++i)
     {
         uint64_t delta = dictionary[i] ^ bitfield;
         if (delta == 0)
@@ -589,7 +563,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
     // build a histogram and select the TABLE_SIZE block indices which are most used
     entry* hashmap = (entry*) cruncher_memory;
-    entry top_table[TABLE_SIZE];
+    uint64_t top_table[TABLE_SIZE];
     uint32_t top_table_size;
     build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
 
@@ -599,12 +573,12 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
     enc_put_bits(codec, top_table_size-1, TABLE_INDEX_NUM_BITS);   // entries count
     for(uint32_t j=0; j<4; ++j)
-        enc_put_bits(codec, (top_table[0].key >> (j*8)) & 0xff, 8);    // first entry not compressed
+        enc_put_bits(codec, (top_table[0] >> (j*8)) & 0xff, 8);    // first entry not compressed
 
     for(uint32_t i=1; i<top_table_size; ++i)
     {
         // table is sorted from small to big, so diff is always positive
-        uint32_t diff = top_table[i].key - top_table[i-1].key;
+        uint32_t diff = top_table[i] - top_table[i-1];
 
         for(uint32_t j=0; j<4; ++j)
             enc_put(codec, &table_entry, (diff >> (j*8)) & 0xff);
@@ -666,11 +640,11 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
             // and the delta with this reference
-            uint32_t reference = top_table_nearest(top_table, top_table_size, current->indices);
+            uint32_t reference = dictionary_nearest(top_table, top_table_size, current->indices) & 0xffff;
             enc_put(codec, &table_index, reference);
 
             // xor the difference and encode (could be 0 if equal to reference)
-            uint32_t difference = current->indices ^ top_table[reference].key;
+            uint32_t difference = current->indices ^ (uint32_t) top_table[reference];
 
             if (difference == 0)
                 enc_put(codec, &block_mode, 0);
@@ -682,7 +656,6 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 for(uint32_t j=0; j<4; ++j)
                     enc_put(codec, &table_difference, (difference>>(j*8))&0xff);
             }
-
             previous = current;
         }
     }
@@ -704,12 +677,12 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     range_model table_entry;
     model_init(&table_entry, 256);
 
-    entry top_table[TABLE_SIZE];
+    uint64_t top_table[TABLE_SIZE];
     uint32_t top_table_size = dec_get_bits(codec, TABLE_INDEX_NUM_BITS)+1;
 
-    top_table[0].key = 0;
+    top_table[0] = 0;
     for(uint32_t j=0; j<4; ++j)
-        top_table[0].key |= dec_get_bits(codec, 8) << (j*8);
+        top_table[0] |= dec_get_bits(codec, 8) << (j*8);
 
     for(uint32_t i=1; i<top_table_size; ++i)
     {
@@ -717,7 +690,7 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
         for(uint32_t j=0; j<4; ++j)
             diff |= dec_get(codec, &table_entry) << (j*8);
 
-        top_table[i].key = top_table[i-1].key + diff;
+        top_table[i] = top_table[i-1] + diff;
     }
 
     range_model table_index, table_difference, block_mode, color_reference;
@@ -759,23 +732,21 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
 
             // indices difference with top table
             uint32_t reference = dec_get(codec, &table_index);
-            uint32_t mode = dec_get(codec, &block_mode);
 
-            if (mode == 0)
-                current->indices = top_table[reference].key;
-            else
+            if (dec_get(codec, &block_mode))
             {
                 uint32_t difference=0;
                 for(uint32_t j=0; j<4; ++j)
                     difference = difference | (dec_get(codec, &table_difference) << (j*8));
-                current->indices =  difference ^ top_table[reference].key;
+                current->indices =  difference ^ (uint32_t) top_table[reference];
             }
+            else
+                current->indices = (uint32_t) top_table[reference];
+
             previous = current;
         }
     }
 }
-
-static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
 
 //----------------------------------------------------------------------------------------------------------------------------
 void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
@@ -831,7 +802,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
             // search in the dictionary for the current bitfield
             uint64_t bitfield = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
-            uint32_t dict_lookup = dictionary_nearest(dictionary, bitfield);
+            uint32_t dict_lookup = dictionary_nearest(dictionary, DICTIONARY_SIZE, bitfield);
             uint16_t score = dict_lookup>>16;
             uint16_t found_index = dict_lookup&0xffff;
             
