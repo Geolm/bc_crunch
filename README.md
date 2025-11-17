@@ -45,10 +45,18 @@ Average compression ratio : 1.493586
 | Rock           | 4         | 524,288                   | 412,365                   | 1.27×               |
 | Brick Large    | 2         | 524,288                   | 408,746                   | 1.28×               |
 
+[BC1 textures samples](./textures/bc1/)
 
 ### BC4 benchmarks
 
-Soon to be added, I'm still working on improving the compression ratio with real-cases texture (ao, displacement and normalmap).
+Average compression ratio : 1.211644
+
+| Category      | Samples | Uncompressed (bytes) | Avg Compressed (bytes) | Avg Compression Ratio |
+|---------------|----------|-----------------------|--------------------------|------------------------|
+| AO            | 4        | 524,288               | 472,594                 | 1.109384               |
+| Displacement  | 4        | 524,288               | 400,749                 | 1.308269               |
+
+[BC4 textures samples](./textures/bc4/)
 
 ---
 
