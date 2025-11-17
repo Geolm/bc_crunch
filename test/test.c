@@ -187,6 +187,9 @@ bool test_bc4(const char* filename)
     size_t crunched_size = bc_crunch(cruncher_memory, bc4_texture, width, height, bc4, crunched_texture, bc4_size*2);
     float ratio = (float) bc4_size / (float) crunched_size;
 
+    global_ratio += ratio;
+    num_ratios++;
+
     fprintf(stdout, "BC4 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc4_size, crunched_size, ratio); 
 
     uint8_t* uncompressed_texture = arena_alloc(&g_arena, bc4_size);
@@ -336,19 +339,19 @@ int main(void)
 
 #ifdef SMALL_SET
     // kodak photos
-    if (!test_multiple("../textures/kodim%02u.png", 1, 5))
+    if (!test_multiple("../textures/bc1/kodim%02u.png", 1, 5))
         return -1;
 
-    if (!test_multiple("../textures/Elements_%02u-512x512.png", 1, 6))
+    if (!test_multiple("../textures/bc1/Elements_%02u-512x512.png", 1, 6))
         return -1;
 
-    if (!test_multiple("../textures/Dirt_%02u-512x512.png", 12, 17))
+    if (!test_multiple("../textures/bc1/Dirt_%02u-512x512.png", 12, 17))
         return -1;
 
-    if (!test_multiple("../textures/Wood_%02u-512x512.png", 4, 7))
+    if (!test_multiple("../textures/bc1/Wood_%02u-512x512.png", 4, 7))
         return -1;
 
-    if (!test_multiple("../textures/Brick_%02d-512x512.png", 10, 14))
+    if (!test_multiple("../textures/bc1/Brick_%02d-512x512.png", 10, 14))
         return -1;
 
 #else
@@ -404,7 +407,7 @@ int main(void)
 #endif
 
     float average_ratio = global_ratio / (float) num_ratios;
-    fprintf(stdout, "\n\naverage ratio : %f\n\n", average_ratio);
+    fprintf(stdout, "\n\nBC1 average compression ratio : %f\n\n", average_ratio);
 
     if (average_ratio < 1.49f)
         return -1;
@@ -431,32 +434,47 @@ int main(void)
 
     fprintf(stdout, "ok\n\n");
 
-    if (!test_bc4("../textures/mask.png"))
+    global_ratio = 0.f;
+    num_ratios = 0;
+
+    if (!test_bc4("../textures/bc4/grey_roof_tiles_02_ao_1k.png"))
         return -1;
 
-    if (!test_bc4("../textures/Cloud_Mask.png"))
+    if (!test_bc4("../textures/bc4/grey_roof_tiles_02_disp_1k.png"))
         return -1;
 
-    if (!test_bc4("../textures/heightmap.png"))
+    if (!test_bc4("../textures/bc4/patterned_cobblestone_ao_1k.png"))
         return -1;
 
-    if (!test_bc4("../textures/ambient_occlusion.png"))
+    if (!test_bc4("../textures/bc4/patterned_cobblestone_disp_1k.png"))
         return -1;
 
-    if (!test_bc4("../textures/ambient_occlusion2.png"))
+    if (!test_bc4("../textures/bc4/red_brick_ao_1k.png"))
         return -1;
+
+    if (!test_bc4("../textures/bc4/red_brick_disp_1k.png"))
+        return -1;
+
+    if (!test_bc4("../textures/bc4/rough_wood_ao_1k.png"))
+        return -1;
+
+    if (!test_bc4("../textures/bc4/rough_wood_disp_1k.png"))
+        return -1;
+
+    average_ratio = global_ratio / (float) num_ratios;
+    fprintf(stdout, "\n\nBC4 average compression ratio : %f\n\n", average_ratio);
 
     fprintf(stdout, "\n\n-----------------------------------\n");
     fprintf(stdout, "| BC3 tests                       |\n");
     fprintf(stdout, "-----------------------------------\n\n");
 
-    if (!test_bc3("../textures/apps-internet-web-browser.png"))
+    if (!test_bc3("../textures/bc3/apps-internet-web-browser.png"))
         return -1;
 
-    if (!test_bc3("../textures/plant_05.png"))
+    if (!test_bc3("../textures/bc3/plant_05.png"))
         return -1;
 
-    if (!test_bc3("../textures/plant_60.png"))
+    if (!test_bc3("../textures/bc3/plant_60.png"))
         return -1;
 
     size_t bytes_allocated, byte_used;
