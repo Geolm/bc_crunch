@@ -118,6 +118,7 @@ Decrunch 50× 1024×1024 texture: 0.723 s  → **34.56 MB/s**
 * cmake -DCMAKE_BUILD_TYPE=Release ..
 * cmake --build .
 * ./test
+* ./benchmark
 
 More tests will be added soon.
 
