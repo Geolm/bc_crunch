@@ -44,6 +44,11 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__ARM_NEON) && defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define BC_CRUNCH_NEON
+#endif
+
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
 //----------------------------------------------------------------------------------------------------------------------------
@@ -567,6 +572,56 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+// This function has multiple versions : NEON, AVX2 (soon) and vanilla
+//----------------------------------------------------------------------------------------------------------------------------
+
+#ifdef BC_CRUNCH_NEON
+static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield)
+{
+    uint32_t scores[DICTIONARY_SIZE];
+    uint64x2_t bf_vec = vdupq_n_u64(bitfield);
+
+    uint32_t i=0;
+    for (; i+1 < table_size; i+=2)
+    {
+        uint64x2_t dict_vec = vld1q_u64(&dictionary[i]);
+        uint64x2_t delta = veorq_u64(dict_vec, bf_vec);
+
+        // popcount per byte
+        uint8x16_t delta_bytes = vreinterpretq_u8_u64(delta);
+        uint8x16_t counts = vcntq_u8(delta_bytes);
+
+        // sum bytes per 64-bit lane
+        uint64_t pc0 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 0);
+        uint64_t pc1 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 1);
+
+        scores[i] = (uint32_t)pc0;
+        scores[i+1] = (uint32_t)pc1;
+    }
+
+    // tail
+    if  (i<table_size)
+    {
+        uint64_t delta = dictionary[i] ^ bitfield;
+        scores[i] = __builtin_popcountll(delta);
+    }
+
+    uint32_t best_index = 0;
+    uint32_t best_score = UINT32_MAX;
+    for (uint32_t j=0; j<table_size; ++j)
+    {
+        uint32_t score = scores[j];
+        if (score < best_score || (score == best_score && dictionary[j] > dictionary[best_index]))
+        {
+            best_score = score;
+            best_index = j;
+        }
+    }
+    return ((best_score & 0xffff) << 16) | (best_index & 0xffff);
+}
+
+#else
+
 static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield)
 {
     uint32_t best_index = 0;
@@ -590,6 +645,8 @@ static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t t
     // combine popcount and index
     return ((best_score&0xffff)<<16) | (best_index&0xffff);
 }
+
+#endif
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
