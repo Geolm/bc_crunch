@@ -26,3 +26,13 @@ add_executable(test
 if(UNIX AND NOT APPLE)
     target_link_libraries(test m)
 endif()
+
+
+add_executable(benchmark
+    ./test/benchmark.c
+    ./bc_crunch.c
+)
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(benchmark m)
+endif()

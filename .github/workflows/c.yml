@@ -18,7 +18,7 @@ jobs:
        run: mkdir build
 
      - name: Configure CMake
-       run: cmake -S . -B build
+       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
      - name: Build
        run: cmake --build ${{github.workspace}}/build
@@ -26,6 +26,10 @@ jobs:
      - name: Test
        working-directory: ${{github.workspace}}/build
        run: ./test
+
+     - name: Benchmark
+       working-directory: ${{github.workspace}}/build
+       run: ./benchmark
       
   build-macos:
     name: macos
@@ -38,7 +42,7 @@ jobs:
       run: mkdir build
 
     - name: Configure CMake
-      run: cmake -S . -B build
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build
@@ -46,6 +50,10 @@ jobs:
     - name: Test
       working-directory: ${{github.workspace}}/build
       run: ./test
+
+    - name: Benchmark
+      working-directory: ${{github.workspace}}/build
+      run: ./benchmark
       
   build-windows:
     name: windows

@@ -50,7 +50,9 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 
 #define RC__MinLength (0x01000000U)
 #define RC__MaxLength (0xFFFFFFFFU)
-#define MAX_ALPHABET_SIZE (256)
+#define DM_MAX_SYMBOLS (256)
+#define DM_MAX_TABLE_BITS 6
+#define DM_MAX_TABLE_SIZE (1 << DM_MAX_TABLE_BITS)
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
@@ -77,10 +79,12 @@ static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 1
 //----------------------------------------------------------------------------------------------------------------------
 typedef struct range_model
 {
-    uint32_t distribution[MAX_ALPHABET_SIZE]; 
-    uint32_t symbol_count[MAX_ALPHABET_SIZE];
+    uint32_t distribution[2 * DM_MAX_SYMBOLS + DM_MAX_TABLE_SIZE + 2]; 
+    uint32_t* symbol_count;
     uint32_t total_count, update_cycle, symbols_until_update;
-    uint32_t data_symbols, last_symbol;
+    uint32_t data_symbols, last_symbol, table_size, table_shift;
+    
+    uint32_t *decoder_table;
 } range_model;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -99,11 +103,28 @@ void adaptive_model_update(range_model* model)
     uint32_t k, sum = 0;
     uint32_t scale = 0x80000000U / model->total_count;
 
-    for (k = 0; k < model->data_symbols; k++) 
+    if (model->table_size == 0)
     {
-        model->distribution[k] = (scale * sum) >> (31 - DM__LengthShift);
-        sum += model->symbol_count[k];
-    }    
+        for (k = 0; k < model->data_symbols; k++) 
+        {
+            model->distribution[k] = (scale * sum) >> (31 - DM__LengthShift);
+            sum += model->symbol_count[k];
+        }
+    }
+    else
+    {
+        uint32_t k, sum = 0, s = 0;
+        for (k = 0; k < model->data_symbols; k++) 
+        {
+            model->distribution[k] = (scale * sum) >> (31 - DM__LengthShift);
+            sum += model->symbol_count[k];
+            uint32_t w = model->distribution[k] >> model->table_shift;
+            while (s < w) model->decoder_table[++s] = k - 1;
+        }
+        model->decoder_table[0] = 0;
+        while (s <= model->table_size) model->decoder_table[++s] = model->data_symbols - 1;
+    }
+    
 
     model->update_cycle = (5 * model->update_cycle) >> 2;
     uint32_t max_cycle = (model->data_symbols + 6) << 3;
@@ -119,6 +140,25 @@ void model_init(range_model* model, uint32_t number_of_symbols)
     model->last_symbol = model->data_symbols - 1;
     model->total_count = 0;
     model->update_cycle = model->data_symbols;
+
+    // define size of table for fast decoding
+    if (model->data_symbols > 16) 
+    {
+        uint32_t table_bits = 3;
+        while (model->data_symbols > (1U << (table_bits + 2))) ++table_bits;
+        model->table_size  = 1 << table_bits;
+        model->table_shift = DM__LengthShift - table_bits;
+        model->decoder_table = model->distribution + 2 * model->data_symbols;
+        assert(model->distribution != NULL);
+    }
+    else
+    {
+        // small alphabet: no table needed
+        model->decoder_table = 0;
+        model->table_size = model->table_shift = 0;
+    }
+
+    model->symbol_count = model->distribution + model->data_symbols;
 
     for (uint32_t k = 0; k < model->data_symbols; k++) 
         model->symbol_count[k] = 1;
@@ -241,7 +281,7 @@ void enc_put(range_codec* codec, range_model* model, uint32_t data)
 //----------------------------------------------------------------------------------------------------------------------
 static inline void enc_put_bits(range_codec* codec, uint32_t data, uint32_t number_of_bits)
 {
-    assert(data < MAX_ALPHABET_SIZE);
+    assert(data < DM_MAX_SYMBOLS);
 
     uint32_t init_base = codec->base;
     codec->base += data * (codec->length >>= number_of_bits);            // new interval base and length
@@ -260,26 +300,51 @@ uint32_t dec_get(range_codec* codec, range_model* model)
 
     uint32_t n, s, x, y = codec->length;
 
-    // decode using only multiplications
-    x = s = 0;
-    codec->length >>= DM__LengthShift;
-    uint32_t m = (n = model->data_symbols) >> 1;
-
-    // decode via bisection search
-    do 
+    if (model->decoder_table) 
     {
-        uint32_t z = codec->length * model->distribution[m];
-        if (z > codec->value) 
-        {
-            n = m;
-            y = z;
+        // use table look-up for faster decoding
+        uint32_t dv = codec->value / (codec->length >>= DM__LengthShift);
+        uint32_t t = dv >> model->table_shift;
+
+        s = model->decoder_table[t];         // initial decision based on table look-up
+        n = model->decoder_table[t+1] + 1;
+
+        while (n > s + 1) 
+        {                        // finish with bisection search
+            uint32_t m = (s + n) >> 1;
+            if (model->distribution[m] > dv) 
+                n = m; 
+            else s = m;
         }
-        else 
+
+        // compute products
+        x = model->distribution[s] * codec->length;
+        if (s != model->last_symbol) 
+            y = model->distribution[s+1] * codec->length;
+    }
+    else
+    {
+        // decode using only multiplications
+        x = s = 0;
+        codec->length >>= DM__LengthShift;
+        uint32_t m = (n = model->data_symbols) >> 1;
+
+        // decode via bisection search
+        do 
         {
-            s = m;
-            x = z;
-        }
-    } while ((m = (s + n) >> 1) != s);
+            uint32_t z = codec->length * model->distribution[m];
+            if (z > codec->value) 
+            {
+                n = m;
+                y = z;
+            }
+            else 
+            {
+                s = m;
+                x = z;
+            }
+        } while ((m = (s + n) >> 1) != s);
+    }
 
     codec->value -= x;
     codec->length = y - x;
