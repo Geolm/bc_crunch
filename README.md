@@ -78,12 +78,12 @@ Average compression ratio : 1.150844
 
 ### Performance
 
-Using a precomputed decoder table, decrunching is now significantly faster—up to ~1.5× speedup—while crunching performance remains similar. Further optimizations are in progress.
+Using a precomputed decoder table, decrunching is now significantly faster—up to ~1.5× speedup. Further optimizations are in progress.
 
 Current performance on an M1 Pro MacBook Pro:  
 
-Crunch  50× 1024×1024 texture: 1.602 s  → 15.61 MB/s
-Decrunch 50× 1024×1024 texture: 0.723 s  → 34.56 MB/s
+Crunch  50× 1024×1024 texture: 1.602 s  → **15.61 MB/s**  
+Decrunch 50× 1024×1024 texture: 0.723 s  → **34.56 MB/s**
 
 [benchmark.c](./test/benchmark.c)
 
@@ -118,6 +118,7 @@ Decrunch 50× 1024×1024 texture: 0.723 s  → 34.56 MB/s
 * cmake -DCMAKE_BUILD_TYPE=Release ..
 * cmake --build .
 * ./test
+* ./benchmark
 
 More tests will be added soon.
 
