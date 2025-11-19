@@ -135,4 +135,5 @@ Short answer: no. This library was intended as a lightweight testbed for a few i
 
 * Replace the adaptive range encoder with a static one. This requires gathering statistics in a first pass or defining a generic static model.
 * Switch to a cheaper entropy coder (FSE, rANS, Huffman).
+* Decompress multiple stream in parallel (multiple texture ou mipmaps).
 * For better compression ratio, collecting more data in a first pass could allow a stronger model. Also, BC4 currently has no histogram / first-pass analysis, so there is clear room for improvement there.
