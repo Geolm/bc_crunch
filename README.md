@@ -129,7 +129,7 @@ More tests will be added soon.
 Right now you need to call bc_crunch separately for each mip level. I may add a helper later, but I want to keep the encoder simple and stateless, without any mip-level awareness or cross-mip data.
 
 
-##### Is there a plan to improve performance or compression ratio?
+#### Is there a plan to improve performance or compression ratio?
 
 Short answer: no. This library was intended as a lightweight testbed for a few ideas, not a state-of-the-art compressor. That said, if you want to experiment with improvements, here are some directions:
 
