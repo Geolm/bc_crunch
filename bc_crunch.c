@@ -75,10 +75,13 @@ static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 1
 
 #if defined(_MSC_VER)
     #include <intrin.h>
+    #pragma intrinsic(__popcnt)
     #pragma intrinsic(__popcnt64)
     #define popcount64(x) ((int)__popcnt64(x))
+    #define popcount(x) ((int)__popcnt(x))
 #else
     #define popcount64(x) __builtin_popcountll(x)
+    #define popcount(x) __builtin_popcount(x)
 #endif
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -572,39 +575,76 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
 //----------------------------------------------------------------------------------------------------------------------------
 
 #ifdef BC_CRUNCH_NEON
-static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield)
+static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield, uint8_t bit_width)
 {
     uint32_t scores[DICTIONARY_SIZE];
-    uint64x2_t bf_vec = vdupq_n_u64(bitfield);
 
-    uint32_t i=0;
-    for (; i+1 < table_size; i+=2)
+    if (bit_width == 32)
     {
-        uint64x2_t dict_vec = vld1q_u64(&dictionary[i]);
-        uint64x2_t delta = veorq_u64(dict_vec, bf_vec);
+        uint32x4_t bf_vec = vdupq_n_u32(bitfield);
 
-        // popcount per byte
-        uint8x16_t delta_bytes = vreinterpretq_u8_u64(delta);
-        uint8x16_t counts = vcntq_u8(delta_bytes);
+        uint32_t i = 0;
+        for (; i + 3 < table_size; i += 4)
+        {
+            uint64x2_t d0 = vld1q_u64(&dictionary[i + 0]);
+            uint64x2_t d1 = vld1q_u64(&dictionary[i + 2]);
 
-        // sum bytes per 64-bit lane
-        uint64_t pc0 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 0);
-        uint64_t pc1 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 1);
+            uint32x4_t d0_32 = vreinterpretq_u32_u64(d0);
+            uint32x4_t d1_32 = vreinterpretq_u32_u64(d1);
 
-        scores[i] = (uint32_t)pc0;
-        scores[i+1] = (uint32_t)pc1;
+            // unzip to gather lower 32 bits of each 64-bit entry, BC1 bitfield is 32bits long
+            uint32x4x2_t zipped = vuzpq_u32(d0_32, d1_32);
+            uint32x4_t dict_vec = zipped.val[0];
+            uint32x4_t delta = veorq_u32(dict_vec, bf_vec);
+            uint8x16_t delta_bytes = vreinterpretq_u8_u32(delta);
+            uint8x16_t counts = vcntq_u8(delta_bytes);
+            uint16x8_t sum16 = vpaddlq_u8(counts);
+            uint32x4_t sum32 = vpaddlq_u16(sum16);
+
+            scores[i + 0] = vgetq_lane_u32(sum32, 0);
+            scores[i + 1] = vgetq_lane_u32(sum32, 1);
+            scores[i + 2] = vgetq_lane_u32(sum32, 2);
+            scores[i + 3] = vgetq_lane_u32(sum32, 3);
+        }
+
+        // tail
+        for (; i < table_size; ++i)
+        {
+            scores[i] = __builtin_popcount((uint32_t)(dictionary[i] ^ bitfield));
+        }
+    }
+    else
+    {
+        // general 64-bit version
+        uint64x2_t bf_vec = vdupq_n_u64(bitfield);
+
+        uint32_t i = 0;
+        for (; i + 1 < table_size; i += 2)
+        {
+            uint64x2_t dict_vec = vld1q_u64(&dictionary[i]);
+            uint64x2_t delta = veorq_u64(dict_vec, bf_vec);
+
+            uint8x16_t delta_bytes = vreinterpretq_u8_u64(delta);
+            uint8x16_t counts = vcntq_u8(delta_bytes);
+
+            uint64_t pc0 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 0);
+            uint64_t pc1 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 1);
+
+            scores[i] = (uint32_t)pc0;
+            scores[i + 1] = (uint32_t)pc1;
+        }
+
+        if (i < table_size)
+        {
+            uint64_t delta = dictionary[i] ^ bitfield;
+            scores[i] = __builtin_popcountll(delta);
+        }
     }
 
-    // tail
-    if  (i<table_size)
-    {
-        uint64_t delta = dictionary[i] ^ bitfield;
-        scores[i] = __builtin_popcountll(delta);
-    }
-
+    // find best
     uint32_t best_index = 0;
     uint32_t best_score = UINT32_MAX;
-    for (uint32_t j=0; j<table_size; ++j)
+    for (uint32_t j = 0; j < table_size; ++j)
     {
         uint32_t score = scores[j];
         if (score < best_score || (score == best_score && dictionary[j] > dictionary[best_index]))
@@ -613,12 +653,13 @@ static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t t
             best_index = j;
         }
     }
-    return ((best_score & 0xffff) << 16) | (best_index & 0xffff);
+    return ((best_score&0xffff)<<16) | (best_index&0xffff);
 }
+
 
 #else
 
-static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield)
+static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield, uint8_t bit_width)
 {
     uint32_t best_index = 0;
     uint32_t best_score = UINT32_MAX;
@@ -629,7 +670,7 @@ static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t t
         if (delta == 0)
             return i;
 
-        uint32_t score = popcount64(delta);
+        uint32_t score = (bit_width == 32) ? popcount((uint32_t)delta) : popcount64(delta);
         if (score < best_score ||
            ((score == best_score) && (dictionary[i] > dictionary[best_index])))
         {
@@ -759,7 +800,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
             // and the delta with this reference
-            uint32_t reference = dictionary_nearest(top_table, top_table_size, current->indices) & 0xffff;
+            uint32_t reference = dictionary_nearest(top_table, top_table_size, current->indices, 32) & 0xffff;
             enc_put(codec, &table_index, reference);
 
             // xor the difference and encode (could be 0 if equal to reference)
@@ -921,7 +962,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
             // search in the dictionary for the current bitfield
             uint64_t bitfield = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
-            uint32_t dict_lookup = dictionary_nearest(dictionary, DICTIONARY_SIZE, bitfield);
+            uint32_t dict_lookup = dictionary_nearest(dictionary, DICTIONARY_SIZE, bitfield, 48);
             uint16_t score = dict_lookup>>16;
             uint16_t found_index = dict_lookup&0xffff;
             

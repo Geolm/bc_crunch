@@ -121,4 +121,12 @@ Neon SIMD dictionary_nearest
     decrunch 50 times a 1024x1024 texture in 0.720878 seconds
     output : 34.679910 MB/s
 
+Neon SIMD popcount 32 bits for BC1
+
+    crunch 100 times a 1024x1024 texture in 2.233203 seconds
+    output : 22.389362 MB/s
+
+    decrunch 100 times a 1024x1024 texture in 1.448726 seconds
+    output : 34.513074 MB/s
+
 */
