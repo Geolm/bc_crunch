@@ -88,7 +88,6 @@ typedef struct range_model
     uint32_t* symbol_count;
     uint32_t total_count, update_cycle, symbols_until_update;
     uint32_t data_symbols, last_symbol, table_size, table_shift;
-    
     uint32_t *decoder_table;
 } range_model;
 
@@ -254,8 +253,7 @@ uint32_t enc_done(range_codec* codec)
 void enc_put(range_codec* codec, range_model* model, uint32_t data)
 {
     assert(data < model->data_symbols); // invalid data symbols
-    assert(model->distribution != NULL); // adaptive model should be initialized
-    
+
     uint32_t x;
     uint32_t init_base = codec->base;
 
@@ -301,8 +299,6 @@ static inline void enc_put_bits(range_codec* codec, uint32_t data, uint32_t numb
 //----------------------------------------------------------------------------------------------------------------------
 uint32_t dec_get(range_codec* codec, range_model* model)
 {
-    assert(model->distribution != NULL);
-
     uint32_t n, s, x, y = codec->length;
 
     if (model->decoder_table) 
