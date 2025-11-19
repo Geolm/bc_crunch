@@ -78,11 +78,11 @@ Average compression ratio : 1.150844
 
 ### Performance
 
-Using a precomputed decoder table, decrunching is now significantly faster—up to ~1.5× speedup. Further optimizations are in progress.
+Using a precomputed decoder table, decrunching is now significantly faster—up to ~1.5× speedup. Some parts of the cruncher have been optimized using NEON instructions (I don't have a x64 available to do the AVX/SSE port).  
 
 Current performance on an M1 Pro MacBook Pro:  
 
-Crunch  50× 1024×1024 texture: 1.602 s  → **15.61 MB/s**  
+Crunch  50× 1024×1024 texture: 1.602 s  → **19.95 MB/s**  
 Decrunch 50× 1024×1024 texture: 0.723 s  → **34.56 MB/s**
 
 [benchmark.c](./test/benchmark.c)
@@ -124,6 +124,15 @@ More tests will be added soon.
 
 ## FAQ
 
-#### How can I compress a texture with all mipmaps
+#### How can I compress a texture with all mipmaps?
 
 Right now you need to call bc_crunch separately for each mip level. I may add a helper later, but I want to keep the encoder simple and stateless, without any mip-level awareness or cross-mip data.
+
+
+##### Is there a plan to improve performance or compression ratio?
+
+Short answer: no. This library was intended as a lightweight testbed for a few ideas, not a state-of-the-art compressor. That said, if you want to experiment with improvements, here are some directions:
+
+* Replace the adaptive range encoder with a static one. This requires gathering statistics in a first pass or defining a generic static model.
+* Switch to a cheaper entropy coder (FSE, rANS, Huffman).
+* For better compression ratio, collecting more data in a first pass could allow a stronger model. Also, BC4 currently has no histogram / first-pass analysis, so there is clear room for improvement there.

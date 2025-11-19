@@ -12,7 +12,7 @@
 #include "stb_image.h"
 
 
-#define NUM_ITERATIONS (50U)
+#define NUM_ITERATIONS (100U)
 
 void* cruncher_memory = NULL;
 
@@ -113,5 +113,12 @@ Range encoder decoder table
     decrunch 50 times a 1024x1024 texture in 0.723421 seconds
     output : 34.558022 MB/s
 
+Neon SIMD dictionary_nearest
+
+    crunch 50 times a 1024x1024 texture in 1.252861 seconds
+    output : 19.954335 MB/s
+
+    decrunch 50 times a 1024x1024 texture in 0.720878 seconds
+    output : 34.679910 MB/s
 
 */
