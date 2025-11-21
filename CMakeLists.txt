@@ -6,10 +6,6 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0")
 endif()
 
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
-endif()
-
 set(CMAKE_C_STANDARD 11)
 if(MSVC)
     set(CMAKE_C_FLAGS_DEBUG "/W3 /Zi")
