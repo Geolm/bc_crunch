@@ -1,7 +1,7 @@
 # bc_crunch
 
 ![C Standard](https://img.shields.io/badge/C-C99-F4A261)
-[![Build Status](https://github.com/Geolm/bc_crunch/actions/workflows/c.yml/badge.svg)](https://github.com/geolm/crunch/actions)
+[![Build Status](https://github.com/Geolm/bc_crunch/actions/workflows/c.yml/badge.svg)](https://github.com/geolm/bc_crunch/actions)
 
 
 `bc_crunch` is a tiny, dependency-free C99 library for *lossless* compression of GPU-compressed texture blocks **BC1, BC4, BC3, and BC5**.
