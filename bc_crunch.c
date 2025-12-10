@@ -63,9 +63,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define HASHMAP_SIZE (1 << 20)
 #define TABLE_INDEX_NUM_BITS (8)
 #define TABLE_SIZE (1<<TABLE_INDEX_NUM_BITS)
-#define RED_DELTA_NUM_BITS (6)
-#define GREEN_DELTA_NUM_BITS (7)
-#define BLUE_DELTA_NUM_BITS (6)
+#define COLOR_DELTA_NUM_BITS (7)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
 #define BC4_COLOR_NUM_BITS (8)
@@ -426,21 +424,6 @@ static inline const void* get_block(const void *base, size_t elem_size, uint32_t
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t delta_encode(uint8_t prev, uint8_t curr, uint8_t num_bits)
-{
-    int delta = (int)curr - (int)prev;
-    return (uint8_t)(delta + (1 << (num_bits - 1)));
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t delta_decode(uint8_t prev, uint8_t delta_encoded, uint8_t num_bits)
-{
-    int delta = (int)delta_encoded - (1 << (num_bits - 1));
-    int curr = (int)prev + delta;
-    return (uint8_t)curr;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t delta_encode_wrap(uint8_t prev, uint8_t curr)
 {
     return curr - prev; // automatically wraps modulo 256
@@ -745,9 +728,9 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     }
 
     range_model red, green, blue;
-    model_init(&red,   1 << RED_DELTA_NUM_BITS);
-    model_init(&green, 1 << GREEN_DELTA_NUM_BITS);
-    model_init(&blue,  1 << BLUE_DELTA_NUM_BITS);
+    model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
+    model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
+    model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
 
     range_model table_index, table_difference, block_mode, color_reference;
     model_init(&table_index, top_table_size);
@@ -793,9 +776,21 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                     }
                 }
 
-                enc_put(codec, &red, delta_encode(previous_red, current_red, RED_DELTA_NUM_BITS));
-                enc_put(codec, &green, delta_encode(previous_green, current_green, GREEN_DELTA_NUM_BITS));
-                enc_put(codec, &blue, delta_encode(previous_blue, current_blue, BLUE_DELTA_NUM_BITS));
+                int dred = current_red - previous_red;
+                int dgreen = current_green - previous_green;
+                int dblue = current_blue - previous_blue;
+
+                // first encode green delta
+                enc_put(codec, &green, (uint8_t) (dgreen + 64));
+
+                // then encode red and blue delta based on green delta
+                // assuming some relation between green and other components
+                dgreen /= 2;
+                dred -= dgreen;
+                dblue -= dgreen;
+
+                enc_put(codec, &red, (uint8_t) (dred + 64));
+                enc_put(codec, &blue, (uint8_t) (dblue + 64));
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
@@ -830,9 +825,9 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     uint32_t width_blocks = width/4;
 
     range_model red, green, blue;
-    model_init(&red,   1 << RED_DELTA_NUM_BITS);
-    model_init(&green, 1 << GREEN_DELTA_NUM_BITS);
-    model_init(&blue,  1 << BLUE_DELTA_NUM_BITS);
+    model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
+    model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
+    model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
 
     range_model table_entry;
     model_init(&table_entry, 256);
@@ -879,15 +874,22 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                     bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
                 }
 
-                uint8_t delta_red = (uint8_t)dec_get(codec, &red);
                 uint8_t delta_green = (uint8_t)dec_get(codec, &green);
+                uint8_t delta_red = (uint8_t)dec_get(codec, &red);
                 uint8_t delta_blue = (uint8_t)dec_get(codec, &blue);
 
-                uint8_t current_red = delta_decode(reference_red, delta_red, RED_DELTA_NUM_BITS);
-                uint8_t current_green = delta_decode(reference_green, delta_green, GREEN_DELTA_NUM_BITS);
-                uint8_t current_blue = delta_decode(reference_blue, delta_blue, BLUE_DELTA_NUM_BITS);
+                // red and blue delta are based on green delta
+                int dgreen_orig = (int)delta_green - 64;
+                int current_green_value = reference_green + dgreen_orig;
+                int dgreen_halved = dgreen_orig / 2;
 
-                current->color[j] = bc1_pack_565(current_red, current_green, current_blue);
+                int dred_orig = ((int)delta_red - 64) + dgreen_halved;
+                int dblue_orig = ((int)delta_blue - 64) + dgreen_halved;
+
+                int current_red_value = reference_red + dred_orig;
+                int current_blue_value = reference_blue + dblue_orig;
+
+                current->color[j] = bc1_pack_565((uint8_t)current_red_value, (uint8_t)current_green_value, (uint8_t)current_blue_value);
             }
 
             // indices difference with top table

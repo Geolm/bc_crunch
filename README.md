@@ -23,27 +23,24 @@ Compression ratio naturally depends on the input content. Repetitive patterns, s
 
 ### BC1 benchmarks
 
-Average compression ratio : 1.493586
+Average compression ratio : 1.580368
 
-| Category       | # Samples | Original BC1 Size (bytes) | Avg Crunched Size (bytes) | Avg Compression Ratio |
-|----------------|-----------|---------------------------|---------------------------|---------------------|
-| Kodak photos   | 24        | 196,608                   | 136,254                   | 1.44               |
-| Dirt           | 20        | 131,072                   | 105,386                   | 1.24               |
-| Wood           | 20        | 131,072                   | 79,306                    | 1.65               |
-| Elements       | 20        | 131,072                   | 90,412                    | 1.45               |
-| Brick          | 20        | 131,072                   | 88,212                    | 1.49               |
-| Metal          | 20        | 131,072                   | 87,132                    | 1.51               |
-| Plaster        | 20        | 131,072                   | 99,118                    | 1.33               |
-| Stone          | 20        | 131,072                   | 97,014                    | 1.35               |
-| Tile           | 20        | 131,072                   | 101,087                   | 1.30               |
-| Blaz Tree      | 7         | 32,768–32,768             | 16,900                    | 1.84               |
-| SW Tree        | 7         | 20,480–32,768             | 14,227                    | 2.08               |
-| pkf Concrete   | 4         | 32,768                    | 24,583                    | 1.33               |
-| pk02 Floor     | 20        | 32,768–524,288            | 100,604                   | 1.83               |
-| pk02 Trim      | 5         | 4,096–131,072             | 11,777                    | 1.89               |
-| Rock           | 4         | 524,288                   | 412,365                   | 1.27               |
-| Brick Large    | 2         | 524,288                   | 408,746                   | 1.28               |
-| **Average**    | -         | -                         | -                         | 1.493586           |
+| Texture Type | Number of Textures | Total BC1 Size (bytes) | Total Crunched Size (bytes) | Average Compression Ratio |
+|:---------------------|---------------------:|-------------------------:|------------------------------:|----------------------------:|
+| Brick Textures | 20 | 2621440 | 1644322 | 1.594 |
+| Dirt Textures | 20 | 2621440 | 1957069 | 1.339 |
+| Elements Textures | 20 | 2621440 | 1718316 | 1.526 |
+| Kodim (Photographic) | 24 | 4718592 | 3074531 | 1.535 |
+| Metal Textures | 20 | 2621440 | 1661363 | 1.578 |
+| Other Misc | 2 | 1048576 | 734665 | 1.427 |
+| PK02 Floor (Misc) | 13 | 1900544 | 1147816 | 1.656 |
+| PK02 Trim (Misc) | 5 | 188416 | 122745 | 1.535 |
+| PKF Concrete (Misc) | 4 | 131072 | 93659 | 1.399 |
+| Plaster Textures | 20 | 2621440 | 1853888 | 1.414 |
+| Rock (Misc) | 4 | 2097152 | 1504195 | 1.394 |
+| Stone Textures | 20 | 2621440 | 1807316 | 1.450 |
+| Tile Textures | 20 | 2621440 | 1823480 | 1.438 |
+| Wood Textures | 20 | 2621440 | 1580632 | 1.658 |
 
 [BC1 textures samples](./textures/bc1/)
 
@@ -82,8 +79,8 @@ Using a precomputed decoder table, decrunching is now significantly faster—up 
 
 Current performance on an M1 Pro MacBook Pro:  
 
-Crunch  100× 1024×1024 texture: 2.23 s  → **22.38 MB/s**  
-Decrunch 100× 1024×1024 texture: 1.44 s  → **34.56 MB/s**
+Crunch  100× 1024×1024 texture: 2.23 s  → **21.97 MB/s**  
+Decrunch 100× 1024×1024 texture: 1.44 s  → **36.02 MB/s**
 
 [benchmark.c](./test/benchmark.c)
 
@@ -97,6 +94,7 @@ Decrunch 100× 1024×1024 texture: 1.44 s  → **34.56 MB/s**
 - Top-table of the 256 most frequent index bitfields (prepass histogram)  
 - Nearest-match selection via popcount distance  
 - Delta-encoded index patches (no raw fallback)
+- Inter-Channel differential coding
 
 ### BC4
 - Zigzag block traversal  
