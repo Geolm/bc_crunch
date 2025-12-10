@@ -923,13 +923,16 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-    range_model color_reference, first_index, indices, use_dict, dict_reference, dict_delta;
+    range_model color_reference, first_index, indices, use_dict, dict_reference; 
     model_init(&color_reference, 2);
     model_init(&first_index, 1<<3);
     model_init(&indices, 1<<BC4_INDEX_NUM_BITS);
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
-    model_init(&dict_delta, 256);
+
+    range_model dict_delta[16];
+    for(uint32_t i=0; i<16; ++i)
+        model_init(&dict_delta[i], 1<<3);
 
     bc4_block empty_block = {.color = {0, 128}};
     const bc4_block* previous = &empty_block;
@@ -975,8 +978,9 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 enc_put(codec, &dict_reference, found_index);
                 
                 uint64_t reference = dictionary[found_index];
-                for(uint32_t j=0; j<6; ++j)
-                    enc_put(codec, &dict_delta, ((reference>>(j*8))&0xff) ^ ((bitfield>>(j*8))&0xff));
+                uint64_t bitfield_delta = reference ^ bitfield;
+                for(uint32_t j=0; j<16; ++j)
+                    enc_put(codec, &dict_delta[j], (bitfield_delta>>(j*3))&0x7);
 
                 if(found_index > 0)
                 {
@@ -1021,13 +1025,16 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-    range_model color_reference, first_index, indices, use_dict, dict_reference, dict_delta;
+    range_model color_reference, first_index, indices, use_dict, dict_reference;
     model_init(&color_reference, 2);
     model_init(&first_index, 1<<3);
     model_init(&indices, 1<<BC4_INDEX_NUM_BITS);
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
-    model_init(&dict_delta, 256);
+
+    range_model dict_delta[16];
+    for(uint32_t i=0; i<16; ++i)
+        model_init(&dict_delta[i], 1<<3);
 
     bc4_block empty_block = {.color = {0, 128}};
     bc4_block* previous = &empty_block;
@@ -1065,10 +1072,10 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                 uint64_t reference = dictionary[found_index];
                 uint64_t bitfield = 0;
     
-                for(uint32_t j=0; j<6; ++j)
+                for(uint32_t j=0; j<16; ++j)
                 {
-                    uint64_t byte = (uint64_t)dec_get(codec, &dict_delta);
-                    bitfield |= (byte << (j*8));
+                    uint64_t byte = (uint64_t)dec_get(codec, &dict_delta[j]);
+                    bitfield |= (byte << (j*3));
                 }
 
                 bitfield ^= reference;
@@ -1116,6 +1123,7 @@ just left or up : 1.211573
 block zig-zag xor : 1.211644
 xor-delta dictionary :  : 1.227614
 move-to-front dictionary : 1.232521
+16x 3bits model for dict xor 1.234481
 */
 
 
