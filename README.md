@@ -46,13 +46,13 @@ Average compression ratio : 1.580368
 
 ### BC4 benchmarks
 
-Average compression ratio : 1.232521
+Average compression ratio : 1.2988
 
-| Category     | Samples | Uncompressed (bytes) | Avg Compressed (bytes) | Avg Compression Ratio |
-| ------------ | ------- | -------------------- | ---------------------- | --------------------- |
-| AO           | 4       | 524,288              | 472,347                | 1.110685              |
-| Displacement | 4       | 524,288              | 390,158                | 1.354357              |
-| **Average**  | -       | -                    | -                      | 1.232521           |
+| Category | Samples | Uncompressed (bytes) | Avg Compressed (bytes) | Avg Compression Ratio (Arithmetic Mean) |
+| :--- | :--- | ---: | ---: | ---: |
+| AO | 4 | 524,288 | 451,051 | 1.1624 |
+| Displacement | 4 | 524,288 | 367,660 | 1.4260 |
+| **Arithmetic Average** | - | - | - | **1.2988** |
 
 
 [BC4 textures samples](./textures/bc4/)
@@ -60,15 +60,15 @@ Average compression ratio : 1.232521
 
 ### BC5 benchmarks
 
-Average compression ratio : 1.150844
+Average compression ratio : 1.187013
 
-| Texture                          | Width | Height | BC5 Size (bytes) | Crunched Size (bytes) | Compression Ratio |
-|----------------------------------|-------|--------|-----------------|----------------------|-----------------|
-| grey_roof_tiles_02_nor_dx_1k.png | 1024  | 1024   | 1,048,576       | 856,423              | 1.224           |
-| patterned_cobblestone_nor_dx_1k.png | 1024 | 1024  | 1,048,576       | 945,970              | 1.108           |
-| red_brick_nor_dx_1k.png          | 1024  | 1024   | 1,048,576       | 910,903              | 1.151           |
-| rough_wood_nor_dx_1k.png         | 1024  | 1024   | 1,048,576       | 936,729              | 1.119           |
-| **Average**                       | -     | -      | -               | -                    | 1.151           |
+| Texture | Width | Height | BC5 Size (bytes) | Crunched Size (bytes) | Compression Ratio |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| grey\_roof\_tiles\_02\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 831,233 | 1.261 |
+| patterned\_cobblestone\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 915,387 | 1.146 |
+| red\_brick\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 877,993 | 1.194 |
+| rough\_wood\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 914,356 | 1.147 |
+| **Average** | - | - | - | - | **1.187** |
 
 
 [BC5 textures samples](./textures/bc5/)
