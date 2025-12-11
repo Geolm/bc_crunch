@@ -97,7 +97,6 @@ Decrunch 100× 1024×1024 texture: 1.44 s  → **36.02 MB/s**
 - Inter-Channel differential coding
 
 ### BC4
-- Zigzag block traversal  
 - Cyclic wrapped endpoint deltas (mod 256) using left/up predictors
 - 256-entry sliding dictionary
 - Move-to-front heuristic when hit

@@ -955,7 +955,6 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
     // dictionary initialization
     uint64_t dictionary[DICTIONARY_SIZE];
-    uint32_t dict_index = 0;
     for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
         dictionary[i] = UINT64_MAX;
 
@@ -1006,8 +1005,8 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
             else
             {
                 // store the entry in the dictionary
-                dictionary[dict_index] = bitfield;
-                dict_index = (dict_index + 1) & (DICTIONARY_SIZE-1);   // num entries has to be a power of two
+                memmove(&dictionary[1], &dictionary[0], (DICTIONARY_SIZE - 1) * sizeof(uint64_t));
+                dictionary[0] = bitfield;
 
                 // write the indices with local difference delta encoded
                 enc_put(codec, &use_dict, 0);
@@ -1059,7 +1058,6 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
 
     // dictionary initialization
     uint64_t dictionary[DICTIONARY_SIZE];
-    uint32_t dict_index = 0;
     for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
         dictionary[i] = UINT64_MAX;
 
@@ -1122,8 +1120,8 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                 }
 
                 // store the entry in the dictionary
-                dictionary[dict_index] = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
-                dict_index = (dict_index + 1) & (DICTIONARY_SIZE-1);
+                memmove(&dictionary[1], &dictionary[0], (DICTIONARY_SIZE - 1) * sizeof(uint64_t));
+                dictionary[0] = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
             }
             previous = current;
         }
@@ -1149,6 +1147,7 @@ endpoints range (<8) : 1.312253
 multiple buckets : 1.313912
 second endpoint encoding from first one : 1.3175
 removed zig-zag, use left+up-up_left : 1.324589
+removed circular dictionnary 1.327702
 */
 
 
