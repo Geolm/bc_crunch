@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#define BC_CRUNCH_VERSION_MAJOR 1
+#define BC_CRUNCH_VERSION_MINOR 0
+#define BC_CRUNCH_VERSION_PATCH 0
+#define BC_CRUNCH_VERSION (BC_CRUNCH_VERSION_MAJOR * 10000 + BC_CRUNCH_VERSION_MINOR * 100 + BC_CRUNCH_VERSION_PATCH)
 
 enum bc_format
 {
@@ -13,11 +17,10 @@ enum bc_format
     bc5      // red-green (a.k.a normalmap)
 };
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-
 
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -39,11 +42,11 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
 
 
 //----------------------------------------------------------------------------------------------------------------------------
-// Decompresses the crunched image into a BC1 image ready to be used by the GPU
+// Decompresses the crunched image into a BCn image ready to be used by the GPU
 //      [input]             Pointer to the crunched data
 //      [length]            Length in bytes of the crunched data
 //      [width, height]     Size of the image in pixels
-//      [output]            User-allocated memory to receive the BC1 image (should be big enough)
+//      [output]            User-allocated memory to receive the BCn image (should be big enough)
 //      [format]            Format of the output, *must* match the input format used in bc_crunch
 void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, enum bc_format format, void* output);
 
