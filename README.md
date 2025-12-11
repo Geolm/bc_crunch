@@ -12,6 +12,7 @@
 - Focused on production textures: albedo, masks, normals, heightmaps, etc.
 - GPU-ready output: decompressed blocks are written in standard BC1/BC4/BC3/BC5 format, ready to be uploaded directly to GPU memory (or directly written in shared memory)
 - No extra memory for decompression: only the encoder needs a temporary buffer; decoding writes straight to the output buffer.
+- Achieves a higher average compression ratio than zlib’s maximum-compression setting
 
 This is *not* another general-purpose compressor. `bc_crunch` is specialized for already-compressed GPU formats — it exploits the internal structure of BC1/BC4 blocks, spatial patterns, endpoint deltas, bitfield indices to achieve significant size reductions with very low CPU cost.
 
@@ -23,7 +24,8 @@ Compression ratio naturally depends on the input content. Repetitive patterns, s
 
 ### BC1 benchmarks
 
-BC1 average compression ratio : 1.580368 vs zlib ratio : 1.436144
+bc_crunch average compression ratio: **1.580368**  
+zlib (best compression) ratio: 1.436144
 
 | Category | Samples | Average bc_crunch Ratio | Average zlib Ratio |
 | :--- | :--- | :--- | :--- |
