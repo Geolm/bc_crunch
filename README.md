@@ -23,24 +23,25 @@ Compression ratio naturally depends on the input content. Repetitive patterns, s
 
 ### BC1 benchmarks
 
-Average compression ratio : 1.580368
+BC1 average compression ratio : 1.580368 vs zlib ratio : 1.436144
 
-| Texture Type | Number of Textures | Total BC1 Size (bytes) | Total Crunched Size (bytes) | Average Compression Ratio |
-|:---------------------|---------------------:|-------------------------:|------------------------------:|----------------------------:|
-| Brick Textures | 20 | 2621440 | 1644322 | 1.594 |
-| Dirt Textures | 20 | 2621440 | 1957069 | 1.339 |
-| Elements Textures | 20 | 2621440 | 1718316 | 1.526 |
-| Kodim (Photographic) | 24 | 4718592 | 3074531 | 1.535 |
-| Metal Textures | 20 | 2621440 | 1661363 | 1.578 |
-| Other Misc | 2 | 1048576 | 734665 | 1.427 |
-| PK02 Floor (Misc) | 13 | 1900544 | 1147816 | 1.656 |
-| PK02 Trim (Misc) | 5 | 188416 | 122745 | 1.535 |
-| PKF Concrete (Misc) | 4 | 131072 | 93659 | 1.399 |
-| Plaster Textures | 20 | 2621440 | 1853888 | 1.414 |
-| Rock (Misc) | 4 | 2097152 | 1504195 | 1.394 |
-| Stone Textures | 20 | 2621440 | 1807316 | 1.450 |
-| Tile Textures | 20 | 2621440 | 1823480 | 1.438 |
-| Wood Textures | 20 | 2621440 | 1580632 | 1.658 |
+| Category | Samples | Average bc_crunch Ratio | Average zlib Ratio |
+| :--- | :--- | :--- | :--- |
+| **kodim** | 24 | 1.5434 | 1.2958 |
+| **Wood** | 20 | 1.7068 | 1.3712 |
+| **Metal** | 19 | 1.7012 | 1.5511 |
+| **Brick** | 20 | 1.5971 | 1.4083 |
+| **Elements** | 20 | 1.5173 | 1.3283 |
+| **Stone** | 20 | 1.4469 | 1.3061 |
+| **Tile** | 20 | 1.4422 | 1.2766 |
+| **Plaster** | 20 | 1.3934 | 1.3231 |
+| **Dirt** | 20 | 1.3535 | 1.2797 |
+| **pk02_floor** | 11 | 1.9525 | 1.8641 |
+| **SW_Tree** | 7 | 2.1064 | 2.4498 |
+| **blaztree** | 4 | 1.8486 | 2.0913 |
+| **pk02_trim** | 5 | 1.5886 | 1.7416 |
+| **pkf_concrete** | 4 | 1.4002 | 1.3413 |
+| **rock** | 2 | 1.3956 | 1.1463 |
 
 [BC1 textures samples](./textures/bc1/)
 

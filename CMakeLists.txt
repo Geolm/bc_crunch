@@ -15,6 +15,7 @@ else()
 endif()
 
 add_executable(test
+    ./test/miniz.c
     ./test/test.c
     ./bc_crunch.c
 )

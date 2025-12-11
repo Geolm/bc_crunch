@@ -19,8 +19,11 @@
 #include <stdbool.h>
 #include "default_font_atlas.h"
 
+#include "miniz.h"
+
 Arena g_arena = {};
 float global_ratio = 0.f;
+float global_zlib_ratio = 0.f;
 uint32_t num_ratios = 0;
 void* cruncher_memory = NULL;
 
@@ -82,22 +85,28 @@ float test_bc1(const uint8_t* rgba, uint32_t width, uint32_t height)
     size_t crunched_size = bc_crunch(cruncher_memory, bc1_texture, width, height, bc1, crunched_texture, worst_case);
     float ratio = (float) bc1_size / (float) crunched_size;
 
-    fprintf(stdout, "BC1 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc1_size, crunched_size, ratio); 
+    
 
     uint8_t* uncompressed_texture = arena_alloc(&g_arena, bc1_size);
     bc_decrunch(crunched_texture, crunched_size, width, height, bc1, uncompressed_texture);
 
-    fprintf(stdout, "comparing decrushed vs original : ");
     for(uint32_t i=0; i<bc1_size; ++i)
     {
         if (uncompressed_texture[i] != bc1_texture[i])
         {
-            fprintf(stdout, "failed, divergence at the %uth bytes\n", i);
+            fprintf(stdout, "comparison vs original failed, divergence at the %uth bytes\n", i);
             return -1.f;
         }
     }
 
-    fprintf(stdout, "ok\n");
+    mz_ulong zlib_size = worst_case;
+    mz_compress2(crunched_texture, &zlib_size, bc1_texture, bc1_size, MZ_BEST_COMPRESSION);
+
+    float zlib_ratio = (float) bc1_size / (float) zlib_size;
+    global_zlib_ratio += zlib_ratio;
+
+    fprintf(stdout, "BC1 size %u bytes => crunched size %zu bytes\ncompression ratio : %f vs zlib : %f\n", bc1_size, crunched_size, ratio, zlib_ratio); 
+
     return ratio;
 }
 
@@ -403,6 +412,8 @@ int main(void)
 
     arena_reset(&g_arena);
 
+    global_zlib_ratio = 0.f;
+
 #ifdef SMALL_SET
     // kodak photos
     if (!test_multiple("../textures/bc1/kodim%02u.png", 1, 5))
@@ -473,7 +484,7 @@ int main(void)
 #endif
 
     float average_ratio = global_ratio / (float) num_ratios;
-    fprintf(stdout, "\n\nBC1 average compression ratio : %f\n\n", average_ratio);
+    fprintf(stdout, "\n\nBC1 average compression ratio : %f vs zlib ratio : %f\n\n", average_ratio, global_zlib_ratio / (float) num_ratios);
 
     if (average_ratio < 1.49f)
         return -1;
