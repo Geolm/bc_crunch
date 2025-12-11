@@ -696,6 +696,19 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t dat
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+static inline range_model* bc4_select_model(const bc4_block* b, range_model* indices)
+{
+    int endpoints_delta = int_abs(b->color[0] - b->color[1]);
+
+    if (endpoints_delta < 8)
+        return &indices[0];
+    else if (endpoints_delta < 32)
+        return &indices[8];
+
+    return &indices[16];
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
     assert((width%4 == 0) && (height%4 == 0));
@@ -929,8 +942,8 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
 
-    range_model indices[8];
-    for(uint32_t i=0; i<8; ++i)
+    range_model indices[24];
+    for(uint32_t i=0; i<24; ++i)
         model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
 
     range_model dict_delta[16];
@@ -1004,10 +1017,11 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 uint8_t block_previous = bc4_get_index(current, 0);
                 enc_put(codec, &first_index, block_previous);
 
+                range_model* model = bc4_select_model(current, indices);
                 for(uint32_t j=1; j<16; ++j)
                 {
                     uint8_t data = bc4_get_index(current, block_zigzag[j]);
-                    enc_put(codec, &indices[block_previous], block_previous ^ data);
+                    enc_put(codec, &model[block_previous], block_previous ^ data);
                     block_previous = data;
                 }
             }
@@ -1034,8 +1048,8 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     model_init(&use_dict, 2);
     model_init(&dict_reference, DICTIONARY_SIZE);
 
-    range_model indices[8];
-    for(uint32_t i=0; i<8; ++i)
+    range_model indices[24];
+    for(uint32_t i=0; i<24; ++i)
         model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
 
     range_model dict_delta[16];
@@ -1101,9 +1115,10 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                 uint8_t block_previous = dec_get(codec, &first_index);
                 bc4_set_index(current, 0, block_previous);
 
+                range_model* model = bc4_select_model(current, indices);
                 for(uint32_t j=1; j<16; ++j)
                 {
-                    uint8_t delta = dec_get(codec, &indices[block_previous]);
+                    uint8_t delta = dec_get(codec, &model[block_previous]);
                     uint8_t data = block_previous ^ delta;
                     bc4_set_index(current, block_zigzag[j], data);
                     block_previous = data;
@@ -1130,7 +1145,11 @@ block zig-zag xor : 1.211644
 xor-delta dictionary :  : 1.227614
 move-to-front dictionary : 1.232521
 16x 3bits model for dict xor 1.234481
-markov model for dictionary miss : 1.298764
+contextual model for dictionary miss : 1.298764
+use endpoints range for context (<32) : 1.301263
+endpoints range (<16) :  1.304174
+endpoints range (<8) : 1.312253
+multiple buckets : 1.313912
 */
 
 
