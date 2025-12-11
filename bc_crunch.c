@@ -963,24 +963,20 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
-            // zig-zag pattern
-            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
-            const bc4_block* current = get_block(input, stride, width_blocks, zigzag_x, y);
-            
-            // first endpoint is encoded using left or up previous block difference
-            // second endpoint is encoded from the first one
-            int previous_delta = int_abs(current->color[0] - previous->color[0]);
-            uint8_t candidate = previous->color[0];
-            if (y>0)
+            const bc4_block* current = get_block(input, stride, width_blocks, x, y);
+
+            int reference = previous->color[0];
+            if (y>0 && x>0)
             {
-                const bc4_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
-                int up_delta = int_abs(current->color[0] - up->color[0]);
-                bool up_better = (up_delta < previous_delta);
-                enc_put(codec, &color_reference,  up_better ? 1 : 0);
-                candidate = (up_better) ? up->color[0] : candidate;
+                const bc4_block* up = get_block(input, stride, width_blocks, x, y-1);
+                const bc4_block* up_left = get_block(input, stride, width_blocks, x-1, y-1);
+                reference += up->color[0] - up_left->color[0];
             }
 
-            enc_put(codec, &color_delta[0], delta_encode_wrap(candidate, current->color[0]));
+            if (reference < 0) reference = 0;
+            if (reference > 255) reference = 255;
+
+            enc_put(codec, &color_delta[0], delta_encode_wrap((uint8_t)reference, current->color[0]));
             enc_put(codec, &color_delta[1], delta_encode_wrap(current->color[0], current->color[1]));
 
             // search in the dictionary for the current bitfield
@@ -1071,18 +1067,19 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
-            // zig-zag pattern
-            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
-            bc4_block* current = (bc4_block*) get_block(output, stride, width_blocks, zigzag_x, y);
-
-            uint8_t reference = previous->color[0];
-            if (y>0 && dec_get(codec, &color_reference))
+            bc4_block* current = (bc4_block*) get_block(output, stride, width_blocks, x, y);
+            int reference = previous->color[0];
+            if (y>0 && x>0)
             {
-                bc4_block* up = (bc4_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
-                reference = up->color[0];
+                const bc4_block* up = get_block(output, stride, width_blocks, x, y-1);
+                const bc4_block* up_left = get_block(output, stride, width_blocks, x-1, y-1);
+                reference += up->color[0] - up_left->color[0];
             }
 
-            current->color[0] = delta_decode_wrap(reference, dec_get(codec, &color_delta[0]));
+            if (reference < 0) reference = 0;
+            if (reference > 255) reference = 255;
+
+            current->color[0] = delta_decode_wrap((uint8_t)reference, dec_get(codec, &color_delta[0]));
             current->color[1] = delta_decode_wrap(current->color[0], dec_get(codec, &color_delta[1]));
 
             if (dec_get(codec, &use_dict))
@@ -1151,6 +1148,7 @@ endpoints range (<16) :  1.304174
 endpoints range (<8) : 1.312253
 multiple buckets : 1.313912
 second endpoint encoding from first one : 1.3175
+removed zig-zag, use left+up-up_left : 1.324589
 */
 
 
