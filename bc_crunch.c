@@ -965,11 +965,16 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
             const bc4_block* current = get_block(input, stride, width_blocks, x, y);
 
             int reference = previous->color[0];
-            if (y>0 && x>0)
+            if (y>0)
             {
                 const bc4_block* up = get_block(input, stride, width_blocks, x, y-1);
-                const bc4_block* up_left = get_block(input, stride, width_blocks, x-1, y-1);
-                reference += up->color[0] - up_left->color[0];
+                if (x>0)
+                {
+                    const bc4_block* up_left = get_block(input, stride, width_blocks, x-1, y-1);
+                    reference += up->color[0] - up_left->color[0];
+                }
+                else
+                    reference = up->color[0];
             }
 
             if (reference < 0) reference = 0;
@@ -985,7 +990,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
             uint16_t found_index = dict_lookup&0xffff;
             
             // found or similar? just write the dictionary index
-            if (score <= 6)
+            if (score < 4)
             {
                 enc_put(codec, &use_dict, 1);
                 enc_put(codec, &dict_reference, found_index);
@@ -1067,11 +1072,16 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
         {
             bc4_block* current = (bc4_block*) get_block(output, stride, width_blocks, x, y);
             int reference = previous->color[0];
-            if (y>0 && x>0)
+            if (y>0)
             {
                 const bc4_block* up = get_block(output, stride, width_blocks, x, y-1);
-                const bc4_block* up_left = get_block(output, stride, width_blocks, x-1, y-1);
-                reference += up->color[0] - up_left->color[0];
+                if (x>0)
+                {
+                    const bc4_block* up_left = get_block(output, stride, width_blocks, x-1, y-1);
+                    reference += up->color[0] - up_left->color[0];
+                }
+                else
+                    reference = up->color[0];
             }
 
             if (reference < 0) reference = 0;
@@ -1148,6 +1158,8 @@ multiple buckets : 1.313912
 second endpoint encoding from first one : 1.3175
 removed zig-zag, use left+up-up_left : 1.324589
 removed circular dictionnary 1.327702
+fixed x=0 block: 1.327747
+score < 4 : 1.336385
 */
 
 

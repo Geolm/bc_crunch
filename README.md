@@ -49,15 +49,15 @@ zlib (best compression) ratio: 1.436144
 
 ### BC4 benchmarks
 
-bc_crunch average compression ratio: **1.327702**  
+bc_crunch average compression ratio: **1.336385**  
 zlib (best compression) ratio: 1.104125
 
 | Category | Samples | Average bc_crunch Ratio | Average zlib Ratio |
 | :--- | :--- | :--- | :--- |
-| **grey\_roof\_tiles** | 2 | 1.4426 | 1.1907 |
-| **patterned\_cobblestone** | 2 | 1.2474 | 1.0674 |
-| **red\_brick** | 2 | 1.3171 | 1.0842 |
-| **rough\_wood** | 2 | 1.3038 | 1.0742 |
+| **grey\_roof\_tiles** | 2 | 1.4623 | 1.1907 |
+| **patterned\_cobblestone** | 2 | 1.2525 | 1.0674 |
+| **red\_brick** | 2 | 1.3248 | 1.0842 |
+| **rough\_wood** | 2 | 1.3059 | 1.0742 |
 
 
 [BC4 textures samples](./textures/bc4/)
@@ -65,7 +65,7 @@ zlib (best compression) ratio: 1.104125
 
 ### BC5 benchmarks
 
-Average compression ratio : 1.187013
+Average compression ratio : 1.198832
 
 | Texture | Width | Height | BC5 Size (bytes) | Crunched Size (bytes) | Compression Ratio |
 | :--- | ---: | ---: | ---: | ---: | ---: |
