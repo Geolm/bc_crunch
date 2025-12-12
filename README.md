@@ -16,6 +16,8 @@
 
 This is *not* another general-purpose compressor. `bc_crunch` is specialized for already-compressed GPU formats — it exploits the internal structure of BC1/BC4 blocks, spatial patterns, endpoint deltas, bitfield indices to achieve significant size reductions with very low CPU cost.
 
+Check out the technical [documentation](./doc.md) for more.
+
 ---
 
 ## Benchmarks
