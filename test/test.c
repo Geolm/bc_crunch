@@ -197,29 +197,36 @@ bool test_bc4(const char* filename)
         }
     }
 
-    void* crunched_texture = arena_alloc(&g_arena, bc4_size * 2);
-    size_t crunched_size = bc_crunch(cruncher_memory, bc4_texture, width, height, bc4, crunched_texture, bc4_size*2);
+    size_t worst_case = bc4_size * 2;
+
+    void* crunched_texture = arena_alloc(&g_arena, worst_case);
+    size_t crunched_size = bc_crunch(cruncher_memory, bc4_texture, width, height, bc4, crunched_texture, worst_case);
     float ratio = (float) bc4_size / (float) crunched_size;
 
     global_ratio += ratio;
     num_ratios++;
 
-    fprintf(stdout, "BC4 size %u bytes => crunched size %zu bytes\ncompression ratio : %f\n", bc4_size, crunched_size, ratio); 
-
     uint8_t* uncompressed_texture = arena_alloc(&g_arena, bc4_size);
     bc_decrunch(crunched_texture, crunched_size, width, height, bc4, uncompressed_texture);
 
-    fprintf(stdout, "comparing decrushed vs original : ");
     for(uint32_t i=0; i<bc4_size; ++i)
     {
         if (uncompressed_texture[i] != bc4_texture[i])
         {
-            fprintf(stdout, "failed, divergence at the %uth bytes\n", i);
+            fprintf(stdout, "comparison vs original failed, divergence at the %uth bytes\n", i);
             return false;
         }
     }
 
-    fprintf(stdout, "ok\n");
+
+    mz_ulong zlib_size = worst_case;
+    mz_compress2(crunched_texture, &zlib_size, bc4_texture, bc4_size, MZ_BEST_COMPRESSION);
+
+    float zlib_ratio = (float) bc4_size / (float) zlib_size;
+    global_zlib_ratio += zlib_ratio;
+
+    fprintf(stdout, "BC4 size %u bytes => crunched size %zu bytes\ncompression ratio : %f vs zlib : %f\n", bc4_size, crunched_size, ratio, zlib_ratio); 
+
     stbi_image_free(data);
 
     return true;
@@ -511,6 +518,7 @@ int main(void)
 
     fprintf(stdout, "ok\n\n");
 
+    global_zlib_ratio = 0.f;
     global_ratio = 0.f;
     num_ratios = 0;
 
@@ -539,7 +547,7 @@ int main(void)
         return -1;
 
     average_ratio = global_ratio / (float) num_ratios;
-    fprintf(stdout, "\n\nBC4 average compression ratio : %f\n\n", average_ratio);
+    fprintf(stdout, "\n\nBC4 average compression ratio : %f vs zlib ratio : %f\n\n", average_ratio, global_zlib_ratio / (float) num_ratios);
 
     fprintf(stdout, "\n\n-----------------------------------\n");
     fprintf(stdout, "| BC3 tests                       |\n");
