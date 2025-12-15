@@ -86,8 +86,8 @@ Using a precomputed decoder table, decrunching is now significantly faster—up 
 
 Current performance on an M1 Pro MacBook Pro:  
 
-Crunch  100× 1024×1024 texture: 2.23 s  → **21.97 MB/s**  
-Decrunch 100× 1024×1024 texture: 1.44 s  → **36.02 MB/s**
+Crunch  100× 1024×1024 texture: 2.26 s  → **22.11 MB/s**  
+Decrunch 100× 1024×1024 texture: 1.38 s  → **36.02 MB/s**
 
 [benchmark.c](./test/benchmark.c)
 
