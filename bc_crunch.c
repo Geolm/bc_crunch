@@ -769,7 +769,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 bc1_extract_565(current->color[j], &current_red, &current_green, &current_blue);
                 bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
 
-                if (y>0)
+                if (y>0 && x!=0)
                 {
                     const bc1_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
                     uint8_t up_red, up_green, up_blue;
@@ -881,7 +881,7 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
             {
                 uint8_t reference_red, reference_green, reference_blue;
                 bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
-                if (y>0 && dec_get(codec, &color_reference))
+                if (y>0 && x!=0 && dec_get(codec, &color_reference))
                 {
                     bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
                     bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);

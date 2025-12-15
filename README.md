@@ -26,7 +26,7 @@ Compression ratio naturally depends on the input content. Repetitive patterns, s
 
 ### BC1 benchmarks
 
-bc_crunch average compression ratio: **1.580368**  
+bc_crunch average compression ratio: **1.580960**  
 zlib (best compression) ratio: 1.436144
 
 | Category | Samples | Average bc_crunch Ratio | Average zlib Ratio |
