@@ -498,7 +498,7 @@ void vq_top_table(const void* input, size_t stride, uint32_t num_blocks, uint64_
             for(uint32_t i=0; i<num_entries; ++i)
             {
                 uint32_t diff = b->indices ^ clusters[i].centroid;
-                uint32_t distance = __builtin_popcount(diff);
+                uint32_t distance = popcount(diff);
 
                 if (distance < shortest_distance)
                 {
