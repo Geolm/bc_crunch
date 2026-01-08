@@ -462,18 +462,63 @@ static inline uint32_t hash32(uint32_t x)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void vq_top_table(const void* input, size_t stride, uint32_t num_blocks, uint64_t* output, uint32_t num_entries)
+uint32_t nearest32(const uint32_t* table, uint32_t table_size, uint32_t bitfield)
 {
+    uint32_t scores[TABLE_SIZE];
+    uint32_t i = 0;
+
+#ifdef BC_CRUNCH_NEON
+    uint32x4_t bf_vec = vdupq_n_u32(bitfield);
+
+    for (; i + 3 < table_size; i += 4)
+    {
+        uint32x4_t dict_vec = vld1q_u32(&table[i]);
+        uint32x4_t delta = veorq_u32(dict_vec, bf_vec);
+        uint8x16_t delta_bytes = vreinterpretq_u8_u32(delta);
+        uint8x16_t counts = vcntq_u8(delta_bytes);
+        uint16x8_t sum16 = vpaddlq_u8(counts);
+        uint32x4_t sum32 = vpaddlq_u16(sum16);
+
+        scores[i + 0] = vgetq_lane_u32(sum32, 0);
+        scores[i + 1] = vgetq_lane_u32(sum32, 1);
+        scores[i + 2] = vgetq_lane_u32(sum32, 2);
+        scores[i + 3] = vgetq_lane_u32(sum32, 3);
+    }
+#endif
+
+    // tail (or whole array on x64)
+    for (; i < table_size; ++i)
+        scores[i] = popcount(table[i] ^ bitfield);
+    
+
+    // find best
+    uint32_t best_index = 0;
+    uint32_t best_score = UINT32_MAX;
+    for (uint32_t j = 0; j < table_size; ++j)
+    {
+        uint32_t score = scores[j];
+        if (score < best_score || (score == best_score && table[j] > table[best_index]))
+        {
+            best_score = score;
+            best_index = j;
+        }
+    }
+    return ((best_score&0xffff)<<16) | (best_index&0xffff);
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void vq_top_table(const void* input, size_t stride, uint32_t num_blocks, uint32_t* output, uint32_t num_entries)
+{
+    uint32_t centroids[TABLE_SIZE];
     struct 
     {
-        uint32_t centroid;
         uint32_t bit_diff_count[32];
         uint32_t count;
     } clusters[TABLE_SIZE];
 
     // use the top table entries as candidate for the cluster
     for(uint32_t i=0; i<num_entries; ++i)
-        clusters[i].centroid = (uint32_t) output[i]; // bc1 indices uses 32 bits
+        centroids[i] = output[i];
 
     // multiple iteration to stabilize cluster
     for(uint32_t iteration=0; iteration<4; ++iteration)
@@ -492,31 +537,15 @@ void vq_top_table(const void* input, size_t stride, uint32_t num_blocks, uint64_
         {
             const bc1_block* b = (const bc1_block*) get_block(input, stride, 0, block_index, 0);
 
-            // TODO : should use simd-accelerated code
-            uint32_t best_entry = UINT32_MAX;
-            uint32_t shortest_distance = UINT32_MAX;
-            for(uint32_t i=0; i<num_entries; ++i)
-            {
-                uint32_t diff = b->indices ^ clusters[i].centroid;
-                uint32_t distance = popcount(diff);
+            uint32_t best_entry = nearest32(centroids, num_entries, b->indices) & 0xffff;
+            uint32_t diff = b->indices ^ centroids[best_entry];
 
-                if (distance < shortest_distance)
-                {
-                    shortest_distance = distance;
-                    best_entry = i;
-                }
-            }
+            for(uint32_t i=0; i<32; ++i)
+                if (diff&(1u<<i))
+                    clusters[best_entry].bit_diff_count[i]++;
 
-            if (best_entry != UINT32_MAX)
-            {
-                uint32_t diff = b->indices ^ clusters[best_entry].centroid;
-
-                for(uint32_t i=0; i<32; ++i)
-                    if (diff&(1u<<i))
-                        clusters[best_entry].bit_diff_count[i]++;
-
-                clusters[best_entry].count++;
-            }
+            clusters[best_entry].count++;
+            
         }
 
         // move centroid
@@ -524,20 +553,20 @@ void vq_top_table(const void* input, size_t stride, uint32_t num_blocks, uint64_
         {
             for(uint32_t bit=0; bit<32; ++bit)
                 if (clusters[i].bit_diff_count[bit] > (clusters[i].count/2))
-                    clusters[i].centroid ^= (1u << bit);
+                    centroids[i] ^= (1u << bit);
         }
     }
 
     // fill the table with centroid
     for(uint32_t i=0; i<num_entries; ++i)
-        output[i] = (uint64_t) clusters[i].centroid;
+        output[i] = centroids[i];
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
 int compare_entries(const void* a, const void* b)
 {
-    uint64_t entry_a = *(const uint64_t*) a;
-    uint64_t entry_b = *(const uint64_t*) b;
+    uint32_t entry_a = *(const uint32_t*) a;
+    uint32_t entry_b = *(const uint32_t*) b;
 
     if (entry_a < entry_b)
         return -1;
@@ -549,7 +578,7 @@ int compare_entries(const void* a, const void* b)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t num_blocks, uint64_t* output, uint32_t* num_entries)
+void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t num_blocks, uint32_t* output, uint32_t* num_entries)
 {
     // clear the hashmap
     for(uint32_t i=0; i<HASHMAP_SIZE; ++i)
@@ -626,123 +655,62 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
     //vq_top_table(input, stride, num_blocks, output, *num_entries);
 
     // sort table for compression
-    qsort(output, *num_entries, sizeof(uint64_t), compare_entries);
+    qsort(output, *num_entries, sizeof(uint32_t), compare_entries);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-// This function has multiple versions : NEON, AVX2 (soon) and vanilla
-//----------------------------------------------------------------------------------------------------------------------------
+uint32_t nearest48(const uint64_t* table, uint32_t table_size, uint64_t bitfield)
+{
+    uint32_t scores[TABLE_SIZE];
+    uint32_t i = 0;
+
+    const uint64_t MASK48 = 0x0000FFFFFFFFFFFFull;
 
 #ifdef BC_CRUNCH_NEON
-static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield, uint8_t bit_width)
-{
-    uint32_t scores[DICTIONARY_SIZE];
+    uint64x2_t bf_vec   = vdupq_n_u64(bitfield & MASK48);
+    uint64x2_t mask_vec = vdupq_n_u64(MASK48);
 
-    if (bit_width == 32)
+    for (; i + 1 < table_size; i += 2)
     {
-        uint32x4_t bf_vec = vdupq_n_u32(bitfield);
+        uint64x2_t dict  = vandq_u64(vld1q_u64(&table[i]), mask_vec);
+        uint64x2_t delta = veorq_u64(dict, bf_vec);
 
-        uint32_t i = 0;
-        for (; i + 3 < table_size; i += 4)
-        {
-            uint64x2_t d0 = vld1q_u64(&dictionary[i + 0]);
-            uint64x2_t d1 = vld1q_u64(&dictionary[i + 2]);
+        uint8x16_t cnt = vcntq_u8(vreinterpretq_u8_u64(delta));
 
-            uint32x4_t d0_32 = vreinterpretq_u32_u64(d0);
-            uint32x4_t d1_32 = vreinterpretq_u32_u64(d1);
+        // split lanes correctly
+        uint8x8_t cnt_lo = vget_low_u8(cnt);
+        uint8x8_t cnt_hi = vget_high_u8(cnt);
 
-            // unzip to gather lower 32 bits of each 64-bit entry, BC1 bitfield is 32bits long
-            uint32x4x2_t zipped = vuzpq_u32(d0_32, d1_32);
-            uint32x4_t dict_vec = zipped.val[0];
-            uint32x4_t delta = veorq_u32(dict_vec, bf_vec);
-            uint8x16_t delta_bytes = vreinterpretq_u8_u32(delta);
-            uint8x16_t counts = vcntq_u8(delta_bytes);
-            uint16x8_t sum16 = vpaddlq_u8(counts);
-            uint32x4_t sum32 = vpaddlq_u16(sum16);
-
-            scores[i + 0] = vgetq_lane_u32(sum32, 0);
-            scores[i + 1] = vgetq_lane_u32(sum32, 1);
-            scores[i + 2] = vgetq_lane_u32(sum32, 2);
-            scores[i + 3] = vgetq_lane_u32(sum32, 3);
-        }
-
-        // tail
-        for (; i < table_size; ++i)
-        {
-            scores[i] = __builtin_popcount((uint32_t)(dictionary[i] ^ bitfield));
-        }
+        // horizontal add per 64-bit lane
+        scores[i + 0] = vaddlv_u8(cnt_lo);
+        scores[i + 1] = vaddlv_u8(cnt_hi);
     }
-    else
+#endif
+
+    // tail
+    for (; i < table_size; ++i)
     {
-        // general 64-bit version
-        uint64x2_t bf_vec = vdupq_n_u64(bitfield);
-
-        uint32_t i = 0;
-        for (; i + 1 < table_size; i += 2)
-        {
-            uint64x2_t dict_vec = vld1q_u64(&dictionary[i]);
-            uint64x2_t delta = veorq_u64(dict_vec, bf_vec);
-
-            uint8x16_t delta_bytes = vreinterpretq_u8_u64(delta);
-            uint8x16_t counts = vcntq_u8(delta_bytes);
-
-            uint64_t pc0 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 0);
-            uint64_t pc1 = vgetq_lane_u64(vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(counts))), 1);
-
-            scores[i] = (uint32_t)pc0;
-            scores[i + 1] = (uint32_t)pc1;
-        }
-
-        if (i < table_size)
-        {
-            uint64_t delta = dictionary[i] ^ bitfield;
-            scores[i] = __builtin_popcountll(delta);
-        }
+        uint64_t delta = (table[i] ^ bitfield) & MASK48;
+        scores[i] = (uint32_t)popcount64(delta);
     }
 
     // find best
     uint32_t best_index = 0;
     uint32_t best_score = UINT32_MAX;
+
     for (uint32_t j = 0; j < table_size; ++j)
     {
         uint32_t score = scores[j];
-        if (score < best_score || (score == best_score && dictionary[j] > dictionary[best_index]))
+        if (score < best_score ||
+           (score == best_score && table[j] > table[best_index]))
         {
             best_score = score;
             best_index = j;
         }
     }
-    return ((best_score&0xffff)<<16) | (best_index&0xffff);
+
+    return ((best_score & 0xffff) << 16) | (best_index & 0xffff);
 }
-
-
-#else
-
-static inline uint32_t dictionary_nearest(const uint64_t* dictionary, uint32_t table_size, uint64_t bitfield, uint8_t bit_width)
-{
-    uint32_t best_index = 0;
-    uint32_t best_score = UINT32_MAX;
-
-    for(uint32_t i=0; i<table_size; ++i)
-    {
-        uint64_t delta = dictionary[i] ^ bitfield;
-        if (delta == 0)
-            return i;
-
-        uint32_t score = (bit_width == 32) ? popcount((uint32_t)delta) : popcount64(delta);
-        if (score < best_score ||
-           ((score == best_score) && (dictionary[i] > dictionary[best_index])))
-        {
-            best_score = score;
-            best_index = i;
-        }
-    }
-
-    // combine popcount and index
-    return ((best_score&0xffff)<<16) | (best_index&0xffff);
-}
-
-#endif
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
@@ -795,7 +763,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
     // build a histogram and select the TABLE_SIZE block indices which are most used
     entry* hashmap = (entry*) cruncher_memory;
-    uint64_t top_table[TABLE_SIZE];
+    uint32_t top_table[TABLE_SIZE];
     uint32_t top_table_size;
     build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
 
@@ -810,7 +778,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     for(uint32_t i=1; i<top_table_size; ++i)
     {
         // table is sorted from small to big, so diff is always positive
-        uint32_t diff = (uint32_t)top_table[i] - (uint32_t)top_table[i-1];
+        uint32_t diff = top_table[i] - top_table[i-1];
 
         for(uint32_t j=0; j<4; ++j)
             enc_put(codec, &table_entry, (diff >> (j*8)) & 0xff);
@@ -884,11 +852,11 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
             // and the delta with this reference
-            uint32_t reference = dictionary_nearest(top_table, top_table_size, current->indices, 32) & 0xffff;
+            uint32_t reference = nearest32(top_table, top_table_size, current->indices) & 0xffff;
             enc_put(codec, &table_index, reference);
 
             // xor the difference and encode (could be 0 if equal to reference)
-            uint32_t difference = current->indices ^ (uint32_t) top_table[reference];
+            uint32_t difference = current->indices ^ top_table[reference];
 
             uint32_t mask = 0;
             if ((difference & 0x000000FF) != 0) mask |= 1;
@@ -924,7 +892,7 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     range_model table_entry;
     model_init(&table_entry, 256);
 
-    uint64_t top_table[TABLE_SIZE];
+    uint32_t top_table[TABLE_SIZE];
     uint32_t top_table_size = dec_get_bits(codec, TABLE_INDEX_NUM_BITS)+1;
 
     top_table[0] = 0;
@@ -993,7 +961,7 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                 if (mask & (1 << j))
                     difference = difference | (dec_get(codec, &table_difference) << (j*8));
 
-            current->indices =  difference ^ (uint32_t) top_table[reference];
+            current->indices =  difference ^ top_table[reference];
 
             previous = current;
         }
@@ -1062,7 +1030,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
 
             // search in the dictionary for the current bitfield
             uint64_t bitfield = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
-            uint32_t dict_lookup = dictionary_nearest(dictionary, DICTIONARY_SIZE, bitfield, 48);
+            uint32_t dict_lookup = nearest48(dictionary, DICTIONARY_SIZE, bitfield);
             uint16_t score = dict_lookup>>16;
             uint16_t found_index = dict_lookup&0xffff;
             
