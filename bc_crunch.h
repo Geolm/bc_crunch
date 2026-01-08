@@ -5,8 +5,8 @@
 #include <stddef.h>
 
 #define BC_CRUNCH_VERSION_MAJOR 1
-#define BC_CRUNCH_VERSION_MINOR 4
-#define BC_CRUNCH_VERSION_PATCH 2
+#define BC_CRUNCH_VERSION_MINOR 5
+#define BC_CRUNCH_VERSION_PATCH 0
 #define BC_CRUNCH_VERSION (BC_CRUNCH_VERSION_MAJOR * 10000 + BC_CRUNCH_VERSION_MINOR * 100 + BC_CRUNCH_VERSION_PATCH)
 
 enum bc_format
@@ -36,7 +36,7 @@ size_t crunch_min_size(void);
 //      [format]            Format of the image (BC1, BC3, BC4 or BC5)
 //      [output]            Pointer to the pre-allocated buffer for compressed bc1, most of the time smaller than
 //                          the original bc1 image but in case of random/weird image can be a bit bigger. To be safe
-//                          allocate twice the size of the bc1 image
+//                          allocate twice the size of the bc image
 //      [length]            Length of the compressed image buffer
 size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint32_t height, enum bc_format format, void* output, size_t length);
 

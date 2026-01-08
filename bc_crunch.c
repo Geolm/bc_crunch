@@ -462,6 +462,78 @@ static inline uint32_t hash32(uint32_t x)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+void vq_top_table(const void* input, size_t stride, uint32_t num_blocks, uint64_t* output, uint32_t num_entries)
+{
+    struct 
+    {
+        uint32_t centroid;
+        uint32_t bit_diff_count[32];
+        uint32_t count;
+    } clusters[TABLE_SIZE];
+
+    // use the top table entries as candidate for the cluster
+    for(uint32_t i=0; i<num_entries; ++i)
+        clusters[i].centroid = (uint32_t) output[i]; // bc1 indices uses 32 bits
+
+    // multiple iteration to stabilize cluster
+    for(uint32_t iteration=0; iteration<4; ++iteration)
+    {
+        // clear cluster counters
+        for(uint32_t i=0; i<num_entries; ++i)
+        {
+            for(uint32_t j=0; j<32; ++j)
+                clusters[i].bit_diff_count[j] = 0;
+
+            clusters[i].count = 0;
+        }
+
+        // find the best cluster for each block
+        for(uint32_t block_index=0; block_index<num_blocks; ++block_index)
+        {
+            const bc1_block* b = (const bc1_block*) get_block(input, stride, 0, block_index, 0);
+
+            // TODO : should use simd-accelerated code
+            uint32_t best_entry = UINT32_MAX;
+            uint32_t shortest_distance = UINT32_MAX;
+            for(uint32_t i=0; i<num_entries; ++i)
+            {
+                uint32_t diff = b->indices ^ clusters[i].centroid;
+                uint32_t distance = __builtin_popcount(diff);
+
+                if (distance < shortest_distance)
+                {
+                    shortest_distance = distance;
+                    best_entry = i;
+                }
+            }
+
+            if (best_entry != UINT32_MAX)
+            {
+                uint32_t diff = b->indices ^ clusters[best_entry].centroid;
+
+                for(uint32_t i=0; i<32; ++i)
+                    if (diff&(1u<<i))
+                        clusters[best_entry].bit_diff_count[i]++;
+
+                clusters[best_entry].count++;
+            }
+        }
+
+        // move centroid
+        for(uint32_t i=0; i<num_entries; ++i)
+        {
+            for(uint32_t bit=0; bit<32; ++bit)
+                if (clusters[i].bit_diff_count[bit] > (clusters[i].count/2))
+                    clusters[i].centroid ^= (1u << bit);
+        }
+    }
+
+    // fill the table with centroid
+    for(uint32_t i=0; i<num_entries; ++i)
+        output[i] = (uint64_t) clusters[i].centroid;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 int compare_entries(const void* a, const void* b)
 {
     uint64_t entry_a = *(const uint64_t*) a;
@@ -550,6 +622,10 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
             (*num_entries)++;
     }
 
+    // vector quantization
+    //vq_top_table(input, stride, num_blocks, output, *num_entries);
+
+    // sort table for compression
     qsort(output, *num_entries, sizeof(uint64_t), compare_entries);
 }
 
@@ -745,10 +821,10 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
     model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
 
-    range_model table_index, table_difference, block_mode, color_reference;
+    range_model table_index, table_difference, diff_mask, color_reference;
     model_init(&table_index, top_table_size);
     model_init(&table_difference, 256);
-    model_init(&block_mode, 2);
+    model_init(&diff_mask, 16);
     model_init(&color_reference, 2);
 
     bc1_block empty_block = {0};
@@ -814,16 +890,19 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
             // xor the difference and encode (could be 0 if equal to reference)
             uint32_t difference = current->indices ^ (uint32_t) top_table[reference];
 
-            if (difference == 0)
-                enc_put(codec, &block_mode, 0);
-            else
-            {
-                enc_put(codec, &block_mode, 1);
+            uint32_t mask = 0;
+            if ((difference & 0x000000FF) != 0) mask |= 1;
+            if ((difference & 0x0000FF00) != 0) mask |= 2;
+            if ((difference & 0x00FF0000) != 0) mask |= 4;
+            if ((difference & 0xFF000000) != 0) mask |= 8;
 
-                // encode the full 32 bits difference
-                for(uint32_t j=0; j<4; ++j)
-                    enc_put(codec, &table_difference, (difference>>(j*8))&0xff);
-            }
+            enc_put(codec, &diff_mask, mask);
+
+            // only encode the bytes that are actually non-zero
+            for(uint32_t j=0; j<4; ++j)
+                if (mask & (1u << j))
+                    enc_put(codec, &table_difference, (difference >> (j*8)) & 0xff);
+
             previous = current;
         }
     }
@@ -861,10 +940,10 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
         top_table[i] = top_table[i-1] + diff;
     }
 
-    range_model table_index, table_difference, block_mode, color_reference;
+    range_model table_index, table_difference, diff_mask, color_reference;
     model_init(&table_index, top_table_size);
     model_init(&table_difference, 256);
-    model_init(&block_mode, 2);
+    model_init(&diff_mask, 16);
     model_init(&color_reference, 2);
 
     bc1_block empty_block = {0};
@@ -907,16 +986,14 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
 
             // indices difference with top table
             uint32_t reference = dec_get(codec, &table_index);
+            uint32_t mask = dec_get(codec, &diff_mask);
 
-            if (dec_get(codec, &block_mode))
-            {
-                uint32_t difference=0;
-                for(uint32_t j=0; j<4; ++j)
+            uint32_t difference=0;
+            for(uint32_t j=0; j<4; ++j)
+                if (mask & (1 << j))
                     difference = difference | (dec_get(codec, &table_difference) << (j*8));
-                current->indices =  difference ^ (uint32_t) top_table[reference];
-            }
-            else
-                current->indices = (uint32_t) top_table[reference];
+
+            current->indices =  difference ^ (uint32_t) top_table[reference];
 
             previous = current;
         }
