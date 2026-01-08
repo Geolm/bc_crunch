@@ -420,7 +420,7 @@ int main(void)
 
     global_zlib_ratio = 0.f;
 
-#ifdef SMALL_SETsd
+#ifdef SMALL_SET
     // kodak photos
     if (!test_multiple("../textures/bc1/kodim%02u.png", 1, 5))
         return -1;
