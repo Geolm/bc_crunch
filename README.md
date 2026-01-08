@@ -26,26 +26,26 @@ Compression ratio naturally depends on the input content. Repetitive patterns, s
 
 ### BC1 benchmarks
 
-bc_crunch average compression ratio: **1.580960**  
+bc_crunch average compression ratio: **1.593820**  
 zlib (best compression) ratio: 1.436144
 
 | Category | Samples | Average bc_crunch Ratio | Average zlib Ratio |
 | :--- | :--- | :--- | :--- |
 | **kodim** | 24 | 1.5434 | 1.2958 |
 | **Wood** | 20 | 1.7068 | 1.3712 |
-| **Metal** | 19 | 1.7012 | 1.5511 |
-| **Brick** | 20 | 1.5971 | 1.4083 |
-| **Elements** | 20 | 1.5173 | 1.3283 |
+| **Metal** | 20 | 1.7012 | 1.5511 |
+| **Brick** | 20 | 1.6845 | 1.4616 |
+| **Elements** | 20 | 1.5540 | 1.3340 |
 | **Stone** | 20 | 1.4469 | 1.3061 |
 | **Tile** | 20 | 1.4422 | 1.2766 |
 | **Plaster** | 20 | 1.3934 | 1.3231 |
 | **Dirt** | 20 | 1.3535 | 1.2797 |
-| **pk02_floor** | 11 | 1.9525 | 1.8641 |
+| **pk02_floor** | 13 | 2.1121 | 1.9542 |
 | **SW_Tree** | 7 | 2.1064 | 2.4498 |
-| **blaztree** | 4 | 1.8486 | 2.0913 |
-| **pk02_trim** | 5 | 1.5886 | 1.7416 |
-| **pkf_concrete** | 4 | 1.4002 | 1.3413 |
-| **rock** | 2 | 1.3956 | 1.1463 |
+| **blaztree** | 6 | 1.8856 | 2.0893 |
+| **pk02_trim** | 5 | 1.8229 | 1.8290 |
+| **pkf_concrete** | 4 | 1.4197 | 1.3413 |
+| **rock** | 4 | 1.4003 | 1.1317 |
 
 [BC1 textures samples](./textures/bc1/)
 
