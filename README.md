@@ -82,12 +82,14 @@ Average compression ratio : 1.198832
 
 ### Performance
 
-Using a precomputed decoder table, decrunching is now significantly faster—up to ~1.5× speedup. Some parts of the cruncher have been optimized using NEON instructions (I don't have a x64 available to do the AVX/SSE port).  
+Using a precomputed decoder table, decrunching is now significantly faster—up to ~1.5× speedup. Some parts of the cruncher have been optimized using NEON/SSE3 instructions.  
 
 Current performance on an M1 Pro MacBook Pro:  
 
 Crunch  100× 1024×1024 texture: 2.26 s  → **22.11 MB/s**  
 Decrunch 100× 1024×1024 texture: 1.38 s  → **36.02 MB/s**
+
+Using the macro BC_CRUNCH_USE_VECTOR_QUANTIZATION slows down the compression ~ 11.5 MB/s
 
 [benchmark.c](./test/benchmark.c)
 

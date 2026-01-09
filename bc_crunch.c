@@ -36,8 +36,6 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 
 */
 
-
-
 #include <assert.h>
 #include "bc_crunch.h"
 #include <stdbool.h>
@@ -59,6 +57,9 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
     #endif
 #endif
 
+// enable this macro to increase BC1 compression ratio by about 1% but compression is slower (50%)
+// decompression speed and output is not affected by this macro
+// #define BC_CRUNCH_USE_VECTOR_QUANTIZATION
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
@@ -718,8 +719,10 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
             (*num_entries)++;
     }
 
+#ifdef BC_CRUNCH_USE_VECTOR_QUANTIZATION
     // vector quantization
     vq_top_table(input, stride, num_blocks, output, num_entries);
+#endif
 
     // sort table for compression
     qsort(output, *num_entries, sizeof(uint32_t), compare_entries);

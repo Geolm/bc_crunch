@@ -25,6 +25,7 @@ The 32-bit index pattern, which dictates the $4 \times 4$ pixel colors, is highl
 1.  **Global Dictionary (Top Table) Creation:**
     * The compressor first scans the entire texture and builds a **histogram** of every unique 32-bit index pattern found.
     * It selects the **Top 256 (`TABLE_SIZE`)** most frequently occurring index patterns to form the `top_table`.
+    * If the macro BC_CRUNCH_USE_VECTOR_QUANTIZATION is defined in bc_crunch.c the top table is refined using vector quantization. This algorithm implements Stochastic Bit-Level K-Means Clustering to optimize a BC1 VQ table. It uses Adaptive Jittered Sampling with error-feedback to efficiently assign image blocks to centroids based on Hamming Distance. Centroids are refined via Bitwise Majority Voting, flipping bits that differ in more than 50% of assigned blocks to mathematically minimize total bit-error across iterations.
 2.  **Encoding the Top Table:**
     * The `top_table` itself is compressed by encoding the **difference (delta)** between consecutive 32-bit patterns using Arithmetic Coding, which is very efficient for the small, positive differences resulting from a sorted table.
 3.  **Encoding the Block Indices:**
