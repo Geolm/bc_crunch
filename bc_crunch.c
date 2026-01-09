@@ -44,10 +44,21 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__ARM_NEON) && defined(__ARM_NEON__)
-#include <arm_neon.h>
-#define BC_CRUNCH_NEON
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
+    #include <arm_neon.h>
+    #define BC_CRUNCH_NEON
+    #define BC_TARGET_SIMD 
+#elif defined(__x86_64__) || defined(_M_X64)
+    #include <immintrin.h>
+    #define BC_CRUNCH_SSE
+
+    #if defined(_MSC_VER)
+        #define BC_TARGET_SIMD
+    #else
+        #define BC_TARGET_SIMD __attribute__((target("sse4.1")))
+    #endif
 #endif
+
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
@@ -462,6 +473,7 @@ static inline uint32_t hash32(uint32_t x)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+BC_TARGET_SIMD
 uint32_t nearest32(const uint32_t* table, uint32_t table_size, uint32_t bitfield)
 {
     uint32_t scores[TABLE_SIZE];
@@ -480,6 +492,27 @@ uint32_t nearest32(const uint32_t* table, uint32_t table_size, uint32_t bitfield
         uint32x4_t sum32 = vpaddlq_u16(sum16);
 
         vst1q_u32(&scores[i], sum32);
+    }
+#elif defined(BC_CRUNCH_SSE)
+    const __m128i bf_vec   = _mm_set1_epi32(bitfield);
+    const __m128i mask_low = _mm_set1_epi8(0x0F);
+    const __m128i lookup   = _mm_setr_epi8(0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4);
+
+    for (; i + 3 < table_size; i += 4) 
+    {
+        __m128i x = _mm_xor_si128(_mm_loadu_si128((const __m128i*)&table[i]), bf_vec);
+
+        __m128i low  = _mm_and_si128(x, mask_low);
+        __m128i high = _mm_and_si128(_mm_srli_epi32(x, 4), mask_low); 
+        __m128i cnt  = _mm_add_epi8(_mm_shuffle_epi8(lookup, low), 
+                                    _mm_shuffle_epi8(lookup, high));
+
+        __m128i lo_words = _mm_and_si128(cnt, _mm_set1_epi16(0x00FF));
+        __m128i hi_words = _mm_srli_epi16(cnt, 8);
+        __m128i sums = _mm_add_epi16(lo_words, hi_words);
+        __m128i final = _mm_madd_epi16(sums, _mm_set1_epi16(1));
+
+        _mm_storeu_si128((__m128i*)&scores[i], final);
     }
 #endif
 
