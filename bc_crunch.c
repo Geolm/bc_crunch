@@ -394,6 +394,96 @@ uint32_t dec_get_bits(range_codec* codec, uint32_t number_of_bits)
     return s;
 }
 
+//----------------------------------------------------------------------------------------------------------------------
+typedef struct
+{
+    uint32_t k;
+    uint32_t sum;
+    uint32_t count;
+} rice_model;
+
+//----------------------------------------------------------------------------------------------------------------------
+void rice_model_init(rice_model* model)
+{
+    model->k = 1;
+    model->sum = 0;
+    model->count = 0;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+void rice_model_update(rice_model* model, uint32_t value)
+{
+    // Check if adding 'value' would overflow 32 bits
+    // 0xFFFFFFFF - value is the maximum the sum can be before adding 'value'
+    if (model->sum > (0xFFFFFFFFU - value))
+    {
+        model->sum = 0;
+        model->count = 0;
+    }
+
+    model->sum += value;
+    model->count++;
+
+    // Periodic k-update (tuned for 256-symbol range)
+    if ((model->count & 31) == 0)
+    {
+        uint32_t mean = model->sum / model->count;
+        // Map mean to best k: k ≈ log2(mean)
+        model->k = (mean > 0) ? (31 - __builtin_clz(mean)) : 0;
+        
+        // Cap k at 8, because q = rank >> 8 will usually be 0 or 1 
+        // for an 8-bit alphabet.
+        if (model->k > 8) model->k = 8;
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void enc_rice(range_codec* codec, rice_model* model, uint32_t value)
+{
+    uint32_t q = value >> model->k;
+    uint32_t r = value & ((1U << model->k) - 1);
+
+    while (q--) 
+        enc_put_bits(codec, 1, 1);
+
+    enc_put_bits(codec, 0, 1);
+
+    if (model->k > 0)
+        enc_put_bits(codec, r, model->k);
+
+    rice_model_update(model, value);
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+uint32_t dec_rice(range_codec* codec, rice_model* model)
+{
+    uint32_t q = 0;
+    while (dec_get_bits(codec, 1)) q++;
+
+    uint32_t r = 0;
+    if (model->k > 0) r = dec_get_bits(codec, model->k);
+
+    uint32_t value = (q << model->k) | r;
+
+    rice_model_update(model, value);
+
+    return value;
+}
+
+// Maps signed:  0, -1,  1, -2,  2
+// To unsigned:  0,  1,  2,  3,  4
+static inline uint32_t zigzag_encode(int32_t n)
+{
+    return (uint32_t)((n << 1) ^ (n >> 31));
+}
+
+// Maps unsigned: 0,  1,  2,  3,  4
+// To signed:    0, -1,  1, -2,  2
+static inline int32_t zigzag_decode(uint32_t n)
+{
+    return (int32_t)((n >> 1) ^ (-(int32_t)(n & 1)));
+}
+
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct bc1_block
 {
@@ -854,10 +944,15 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
             enc_put(codec, &table_entry, (diff >> (j*8)) & 0xff);
     }
 
-    range_model red, green, blue;
-    model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
-    model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
-    model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
+    // range_model red, green, blue;
+    // model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
+    // model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
+    // model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
+
+    rice_model red, green, blue;
+    rice_model_init(&red);
+    rice_model_init(&green);
+    rice_model_init(&blue);
 
     range_model table_index, table_difference, diff_mask, color_reference;
     model_init(&table_index, top_table_size);
@@ -908,7 +1003,8 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 int dblue = current_blue - previous_blue;
 
                 // first encode green delta
-                enc_put(codec, &green, (uint8_t) (dgreen + 64));
+                //enc_put(codec, &green, (uint8_t) (dgreen + 64));
+                enc_rice(codec, &green, zigzag_encode(dgreen));
 
                 // then encode red and blue delta based on green delta
                 // assuming some relation between green and other components
@@ -916,8 +1012,10 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 dred -= dgreen;
                 dblue -= dgreen;
 
-                enc_put(codec, &red, (uint8_t) (dred + 64));
-                enc_put(codec, &blue, (uint8_t) (dblue + 64));
+                // enc_put(codec, &red, (uint8_t) (dred + 64));
+                // enc_put(codec, &blue, (uint8_t) (dblue + 64));
+                enc_rice(codec, &red, zigzag_encode(dred));
+                enc_rice(codec, &blue, zigzag_encode(dblue));
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
@@ -954,10 +1052,15 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
 
-    range_model red, green, blue;
-    model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
-    model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
-    model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
+    // range_model red, green, blue;
+    // model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
+    // model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
+    // model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
+
+    rice_model red, green, blue;
+    rice_model_init(&red);
+    rice_model_init(&green);
+    rice_model_init(&blue);
 
     range_model table_entry;
     model_init(&table_entry, 256);
@@ -1004,17 +1107,17 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                     bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
                 }
 
-                uint8_t delta_green = (uint8_t)dec_get(codec, &green);
-                uint8_t delta_red = (uint8_t)dec_get(codec, &red);
-                uint8_t delta_blue = (uint8_t)dec_get(codec, &blue);
+                // uint8_t delta_green = (uint8_t)dec_get(codec, &green);
+                // uint8_t delta_red = (uint8_t)dec_get(codec, &red);
+                // uint8_t delta_blue = (uint8_t)dec_get(codec, &blue);
 
                 // red and blue delta are based on green delta
-                int dgreen_orig = (int)delta_green - 64;
+                int dgreen_orig = zigzag_decode(dec_rice(codec, &green));
                 int current_green_value = reference_green + dgreen_orig;
                 int dgreen_halved = dgreen_orig / 2;
 
-                int dred_orig = ((int)delta_red - 64) + dgreen_halved;
-                int dblue_orig = ((int)delta_blue - 64) + dgreen_halved;
+                int dred_orig = zigzag_decode(dec_rice(codec, &red)) + dgreen_halved;
+                int dblue_orig = zigzag_decode(dec_rice(codec, &blue)) + dgreen_halved;
 
                 int current_red_value = reference_red + dred_orig;
                 int current_blue_value = reference_blue + dblue_orig;

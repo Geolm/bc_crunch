@@ -492,7 +492,7 @@ int main(void)
     float average_ratio = global_ratio / (float) num_ratios;
     fprintf(stdout, "\n\nBC1 average compression ratio : %f vs zlib ratio : %f\n\n", average_ratio, global_zlib_ratio / (float) num_ratios);
 
-    if (average_ratio < 1.5f)
+    if (average_ratio < (global_zlib_ratio / (float) num_ratios))
         return -1;
 
     fprintf(stdout, "-----------------------------------\n");
