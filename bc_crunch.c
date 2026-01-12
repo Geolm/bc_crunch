@@ -95,303 +95,76 @@ static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 1
 #endif
 
 //----------------------------------------------------------------------------------------------------------------------
-typedef struct range_model
-{
-    uint32_t distribution[2 * DM_MAX_SYMBOLS + DM_MAX_TABLE_SIZE + 2]; 
-    uint32_t* symbol_count;
-    uint32_t total_count, update_cycle, symbols_until_update;
-    uint32_t data_symbols, last_symbol, table_size, table_shift;
-    uint32_t *decoder_table;
-} range_model;
-
-//----------------------------------------------------------------------------------------------------------------------
 static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
+
 //----------------------------------------------------------------------------------------------------------------------
-void adaptive_model_update(range_model* model)
+typedef struct bitstream
 {
-    if ((model->total_count += model->update_cycle) > DM__MaxCount) 
-    {
-        model->total_count = 0;
-        for (uint32_t n = 0; n < model->data_symbols; n++)
-            model->total_count += (model->symbol_count[n] = (model->symbol_count[n] + 1) >> 1);
-    }
+    uint8_t* base;
+    uint8_t* ptr;
+    const uint8_t* end;
+    uint32_t bitbuf;
+    uint32_t bitcnt;
+} bitstream;
 
-    uint32_t k, sum = 0;
-    uint32_t scale = 0x80000000U / model->total_count;
-
-    if (model->table_size == 0)
-    {
-        for (k = 0; k < model->data_symbols; k++) 
-        {
-            model->distribution[k] = (scale * sum) >> (31 - DM__LengthShift);
-            sum += model->symbol_count[k];
-        }
-    }
-    else
-    {
-        uint32_t k, sum = 0, s = 0;
-        for (k = 0; k < model->data_symbols; k++) 
-        {
-            model->distribution[k] = (scale * sum) >> (31 - DM__LengthShift);
-            sum += model->symbol_count[k];
-            uint32_t w = model->distribution[k] >> model->table_shift;
-            while (s < w) model->decoder_table[++s] = k - 1;
-        }
-        model->decoder_table[0] = 0;
-        while (s <= model->table_size) model->decoder_table[++s] = model->data_symbols - 1;
-    }
-    
-
-    model->update_cycle = (5 * model->update_cycle) >> 2;
-    uint32_t max_cycle = (model->data_symbols + 6) << 3;
-    if (model->update_cycle > max_cycle) 
-        model->update_cycle = max_cycle;
-    model->symbols_until_update = model->update_cycle;
+//----------------------------------------------------------------------------------------------------------------------
+static inline void bs_init(bitstream* bs, void* buffer, size_t size)
+{
+    bs->base = (uint8_t*)buffer;
+    bs->ptr = bs->base;
+    bs->end = bs->base + size;
+    bs->bitbuf = 0;
+    bs->bitcnt = 0;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-void model_init(range_model* model, uint32_t number_of_symbols)
+static inline size_t bs_flush(bitstream* bs)
 {
-    model->data_symbols = number_of_symbols;
-    model->last_symbol = model->data_symbols - 1;
-    model->total_count = 0;
-    model->update_cycle = model->data_symbols;
+    if (bs->bitcnt)
+    {
+        /* write-mode: pad with zeros */
+        if (bs->ptr < bs->end)
+            *bs->ptr++ = (uint8_t)bs->bitbuf;
 
-    // define size of table for fast decoding
-    if (model->data_symbols > 16) 
-    {
-        uint32_t table_bits = 3;
-        while (model->data_symbols > (1U << (table_bits + 2))) ++table_bits;
-        model->table_size  = 1 << table_bits;
-        model->table_shift = DM__LengthShift - table_bits;
-        model->decoder_table = model->distribution + 2 * model->data_symbols;
-        assert(model->distribution != NULL);
-    }
-    else
-    {
-        // small alphabet: no table needed
-        model->decoder_table = 0;
-        model->table_size = model->table_shift = 0;
+        bs->bitbuf = 0;
+        bs->bitcnt = 0;
     }
 
-    model->symbol_count = model->distribution + model->data_symbols;
-
-    for (uint32_t k = 0; k < model->data_symbols; k++) 
-        model->symbol_count[k] = 1;
-
-    adaptive_model_update(model);
-    model->symbols_until_update = model->update_cycle = (model->data_symbols + 6) >> 1;
+    return (size_t)(bs->ptr - bs->base);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-typedef struct range_codec
+static inline void bs_put_bits(bitstream* bs, uint32_t bits, uint32_t count)
 {
-    uint8_t *code_buffer, *ac_pointer;
-    uint32_t base, value, length;
-    uint32_t buffer_size;
-} range_codec;
+    bs->bitbuf |= bits << bs->bitcnt;
+    bs->bitcnt += count;
 
-//----------------------------------------------------------------------------------------------------------------------
-inline static void propagate_carry(range_codec* codec)
-{
-    uint8_t * p;            
-    // carry propagation on compressed data buffer
-    for (p = codec->ac_pointer - 1; *p == 0xFFU; p--) 
-        *p = 0;
-    ++*p;
+    while (bs->bitcnt >= 8)
+    {
+        if (bs->ptr < bs->end)
+            *bs->ptr++ = (uint8_t)bs->bitbuf;
+
+        bs->bitbuf >>= 8;
+        bs->bitcnt  -= 8;
+    }
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-inline static void renorm_enc_interval(range_codec* codec)
+static inline uint32_t bs_get_bits(bitstream* bs, uint32_t count)
 {
-    do  // output and discard top byte
+    while (bs->bitcnt < count)
     {
-        *codec->ac_pointer++ = (uint8_t)(codec->base >> 24);
-        codec->base <<= 8;
-    } while ((codec->length <<= 8) < RC__MinLength);        // length multiplied by 256
-}
+        if (bs->ptr < bs->end)
+            bs->bitbuf |= (uint32_t)(*bs->ptr++) << bs->bitcnt;
 
-//----------------------------------------------------------------------------------------------------------------------
-void enc_init(range_codec* codec, uint8_t* output, uint32_t length)
-{
-    codec->buffer_size = length;
-    codec->code_buffer = output;
-    codec->base = 0;
-    codec->length = RC__MaxLength;
-    codec->ac_pointer = codec->code_buffer;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-void dec_init(range_codec* codec, const uint8_t* input, uint32_t length)
-{
-    codec->buffer_size = length;
-    codec->code_buffer = (uint8_t*) input;
-    codec->length = RC__MaxLength;
-    codec->ac_pointer = codec->code_buffer + 3;
-    codec->value = ((uint32_t)(codec->code_buffer[0]) << 24) |
-                   ((uint32_t)(codec->code_buffer[1]) << 16) |
-                   ((uint32_t)(codec->code_buffer[2]) <<  8) |
-                    (uint32_t)(codec->code_buffer[3]);
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-uint32_t enc_done(range_codec* codec)
-{
-    uint32_t init_base = codec->base;
-
-    if (codec->length > 2 * RC__MinLength) 
-    {
-        codec->base  += RC__MinLength;
-        codec->length = RC__MinLength >> 1;
-    }
-    else 
-    {
-        codec->base  += RC__MinLength >> 1;
-        codec->length = RC__MinLength >> 9;
+        bs->bitcnt += 8;
     }
 
-    if (init_base > codec->base) 
-        propagate_carry(codec);
-
-    renorm_enc_interval(codec);
-
-    uint32_t code_bytes = (uint32_t)(codec->ac_pointer - codec->code_buffer);
-    assert(code_bytes <= codec->buffer_size);
-
-    return code_bytes;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-void enc_put(range_codec* codec, range_model* model, uint32_t data)
-{
-    assert(data < model->data_symbols); // invalid data symbols
-
-    uint32_t x;
-    uint32_t init_base = codec->base;
-
-    if (data == model->last_symbol) 
-    {
-        x = model->distribution[data] * (codec->length >> DM__LengthShift);
-        codec->base += x;
-        codec->length -= x;
-    }
-    else 
-    {
-        x = model->distribution[data] * (codec->length >>= DM__LengthShift);
-        codec->base += x;
-        codec->length  = model->distribution[data+1] * codec->length - x;
-    }
-
-    if (init_base > codec->base) 
-        propagate_carry(codec);
-
-    if (codec->length < RC__MinLength) 
-        renorm_enc_interval(codec);
-
-    ++model->symbol_count[data];
-    if (--model->symbols_until_update == 0)
-        adaptive_model_update(model);
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline void enc_put_bits(range_codec* codec, uint32_t data, uint32_t number_of_bits)
-{
-    assert(data < DM_MAX_SYMBOLS);
-
-    uint32_t init_base = codec->base;
-    codec->base += data * (codec->length >>= number_of_bits);            // new interval base and length
-
-    if (init_base > codec->base) 
-        propagate_carry(codec);
-
-    if (codec->length < RC__MinLength) 
-        renorm_enc_interval(codec);
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-uint32_t dec_get(range_codec* codec, range_model* model)
-{
-    uint32_t n, s, x, y = codec->length;
-
-    if (model->decoder_table) 
-    {
-        // use table look-up for faster decoding
-        uint32_t dv = codec->value / (codec->length >>= DM__LengthShift);
-        uint32_t t = dv >> model->table_shift;
-
-        s = model->decoder_table[t];         // initial decision based on table look-up
-        n = model->decoder_table[t+1] + 1;
-
-        while (n > s + 1) 
-        {                        // finish with bisection search
-            uint32_t m = (s + n) >> 1;
-            if (model->distribution[m] > dv) 
-                n = m; 
-            else s = m;
-        }
-
-        // compute products
-        x = model->distribution[s] * codec->length;
-        if (s != model->last_symbol) 
-            y = model->distribution[s+1] * codec->length;
-    }
-    else
-    {
-        // decode using only multiplications
-        x = s = 0;
-        codec->length >>= DM__LengthShift;
-        uint32_t m = (n = model->data_symbols) >> 1;
-
-        // decode via bisection search
-        do 
-        {
-            uint32_t z = codec->length * model->distribution[m];
-            if (z > codec->value) 
-            {
-                n = m;
-                y = z;
-            }
-            else 
-            {
-                s = m;
-                x = z;
-            }
-        } while ((m = (s + n) >> 1) != s);
-    }
-
-    codec->value -= x;
-    codec->length = y - x;
-
-    if (codec->length < RC__MinLength)
-    {
-        do
-        {
-            codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
-        } while ((codec->length <<= 8) < RC__MinLength);
-    }
-
-    ++model->symbol_count[s];
-    if (--model->symbols_until_update == 0) 
-        adaptive_model_update(model);
-
-    return s;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-uint32_t dec_get_bits(range_codec* codec, uint32_t number_of_bits)
-{
-    unsigned s = codec->value / (codec->length >>= number_of_bits);      
-    codec->value -= codec->length * s;
-    if (codec->length < RC__MinLength)
-    {
-        do
-        {
-            codec->value = (codec->value << 8) | (uint32_t)(*++codec->ac_pointer);
-        } while ((codec->length <<= 8) < RC__MinLength);
-    }
-
-    return s;
+    uint32_t v = bs->bitbuf & ((1u << count) - 1);
+    bs->bitbuf >>= count;
+    bs->bitcnt  -= count;
+    return v;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -405,7 +178,7 @@ typedef struct
 //----------------------------------------------------------------------------------------------------------------------
 void rice_model_init(rice_model* model)
 {
-    model->k = 1;
+    model->k = 0;
     model->sum = 0;
     model->count = 0;
 }
@@ -413,8 +186,6 @@ void rice_model_init(rice_model* model)
 //----------------------------------------------------------------------------------------------------------------------
 void rice_model_update(rice_model* model, uint32_t value)
 {
-    // Check if adding 'value' would overflow 32 bits
-    // 0xFFFFFFFF - value is the maximum the sum can be before adding 'value'
     if (model->sum > (0xFFFFFFFFU - value))
     {
         model->sum = 0;
@@ -424,11 +195,11 @@ void rice_model_update(rice_model* model, uint32_t value)
     model->sum += value;
     model->count++;
 
-    // Periodic k-update (tuned for 256-symbol range)
     if ((model->count & 31) == 0)
     {
         uint32_t mean = model->sum / model->count;
-        // Map mean to best k: k ≈ log2(mean)
+
+        // map mean to best k: k ≈ log2(mean)
         model->k = (mean > 0) ? (31 - __builtin_clz(mean)) : 0;
         
         // Cap k at 8, because q = rank >> 8 will usually be 0 or 1 
@@ -437,36 +208,66 @@ void rice_model_update(rice_model* model, uint32_t value)
     }
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-void enc_rice(range_codec* codec, rice_model* model, uint32_t value)
+//----------------------------------------------------------------------------------------------------------------------
+static inline void rice_encode(bitstream* bs, rice_model* model, uint32_t value)
 {
     uint32_t q = value >> model->k;
-    uint32_t r = value & ((1U << model->k) - 1);
+    uint32_t r = value & ((1u << model->k) - 1);
 
-    while (q--) 
-        enc_put_bits(codec, 1, 1);
+    // q zeros
+    if (q)
+        bs_put_bits(bs, 0, q);
 
-    enc_put_bits(codec, 0, 1);
+    // terminating 1
+    bs_put_bits(bs, 1, 1);
 
-    if (model->k > 0)
-        enc_put_bits(codec, r, model->k);
+    if (model->k)
+        bs_put_bits(bs, r, model->k);
 
     rice_model_update(model, value);
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-uint32_t dec_rice(range_codec* codec, rice_model* model)
+//----------------------------------------------------------------------------------------------------------------------
+static inline uint32_t bs_get_unary(bitstream* bs)
 {
     uint32_t q = 0;
-    while (dec_get_bits(codec, 1)) q++;
 
-    uint32_t r = 0;
-    if (model->k > 0) r = dec_get_bits(codec, model->k);
+    for (;;)
+    {
+        if (bs->bitcnt == 0)
+        {
+            if (bs->ptr < bs->end)
+            {
+                bs->bitbuf = *bs->ptr++;
+                bs->bitcnt = 8;
+            }
+        }
+
+        uint32_t tz = __builtin_ctz(bs->bitbuf | (1u << bs->bitcnt));
+        q += tz;
+        bs->bitbuf >>= tz;
+        bs->bitcnt  -= tz;
+
+        if (bs->bitcnt)
+        {
+            // consume the terminating 1
+            bs->bitbuf >>= 1;
+            bs->bitcnt--;
+            break;
+        }
+    }
+
+    return q;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+uint32_t rice_decode(bitstream* bs, rice_model* model)
+{
+    uint32_t q = bs_get_unary(bs);
+    uint32_t r = model->k ? bs_get_bits(bs, model->k) : 0;
 
     uint32_t value = (q << model->k) | r;
-
     rice_model_update(model, value);
-
     return value;
 }
 
@@ -900,20 +701,20 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t dat
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline range_model* bc4_select_model(const bc4_block* b, range_model* indices)
-{
-    int endpoints_delta = int_abs(b->color[0] - b->color[1]);
+// static inline range_model* bc4_select_model(const bc4_block* b, range_model* indices)
+// {
+//     int endpoints_delta = int_abs(b->color[0] - b->color[1]);
 
-    if (endpoints_delta < 8)
-        return &indices[0];
-    else if (endpoints_delta < 32)
-        return &indices[8];
+//     if (endpoints_delta < 8)
+//         return &indices[0];
+//     else if (endpoints_delta < 32)
+//         return &indices[8];
 
-    return &indices[16];
-}
+//     return &indices[16];
+// }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
+void bc1_crunch(bitstream* bs, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
@@ -928,12 +729,12 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
 
     // write the table
-    range_model table_entry;
-    model_init(&table_entry, 256);
+    rice_model table_entry;
+    rice_model_init(&table_entry);
 
-    enc_put_bits(codec, top_table_size-1, TABLE_INDEX_NUM_BITS);   // entries count
+    bs_put_bits(bs, top_table_size-1, TABLE_INDEX_NUM_BITS);   // entries count
     for(uint32_t j=0; j<4; ++j)
-        enc_put_bits(codec, (top_table[0] >> (j*8)) & 0xff, 8);    // first entry not compressed
+        bs_put_bits(bs, (top_table[0] >> (j*8)) & 0xff, 8);    // first entry not compressed
 
     for(uint32_t i=1; i<top_table_size; ++i)
     {
@@ -941,24 +742,16 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
         uint32_t diff = top_table[i] - top_table[i-1];
 
         for(uint32_t j=0; j<4; ++j)
-            enc_put(codec, &table_entry, (diff >> (j*8)) & 0xff);
+            rice_encode(bs, &table_entry, (diff >> (j*8)) & 0xff);
     }
-
-    // range_model red, green, blue;
-    // model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
-    // model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
-    // model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
 
     rice_model red, green, blue;
     rice_model_init(&red);
     rice_model_init(&green);
     rice_model_init(&blue);
 
-    range_model table_index, table_difference, diff_mask, color_reference;
-    model_init(&table_index, top_table_size);
+    rice_model table_difference;
     model_init(&table_difference, 256);
-    model_init(&diff_mask, 16);
-    model_init(&color_reference, 2);
 
     bc1_block empty_block = {0};
     const bc1_block* previous = &empty_block;
@@ -987,7 +780,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                     int previous_delta = int_abs(current_red - previous_red) + int_abs(current_green-previous_green) + int_abs(current_blue-previous_blue);
                     int up_delta = int_abs(current_red-up_red) + int_abs(current_green-up_green) + int_abs(current_blue-up_blue);
 
-                    enc_put(codec, &color_reference, (up_delta < previous_delta) ? 1 : 0);
+                    bs_put_bits(bs, (up_delta < previous_delta) ? 1 : 0, 1);
 
                     // overwrite previous value to avoid using a new set of variables
                     if (up_delta < previous_delta)
@@ -1003,8 +796,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 int dblue = current_blue - previous_blue;
 
                 // first encode green delta
-                //enc_put(codec, &green, (uint8_t) (dgreen + 64));
-                enc_rice(codec, &green, zigzag_encode(dgreen));
+                rice_encode(bs, &green, zigzag_encode(dgreen));
 
                 // then encode red and blue delta based on green delta
                 // assuming some relation between green and other components
@@ -1012,10 +804,8 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 dred -= dgreen;
                 dblue -= dgreen;
 
-                // enc_put(codec, &red, (uint8_t) (dred + 64));
-                // enc_put(codec, &blue, (uint8_t) (dblue + 64));
-                enc_rice(codec, &red, zigzag_encode(dred));
-                enc_rice(codec, &blue, zigzag_encode(dblue));
+                rice_encode(bs, &red, zigzag_encode(dred));
+                rice_encode(bs, &blue, zigzag_encode(dblue));
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
@@ -1112,12 +902,12 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                 // uint8_t delta_blue = (uint8_t)dec_get(codec, &blue);
 
                 // red and blue delta are based on green delta
-                int dgreen_orig = zigzag_decode(dec_rice(codec, &green));
+                int dgreen_orig = zigzag_decode(rice_decode(codec, &green));
                 int current_green_value = reference_green + dgreen_orig;
                 int dgreen_halved = dgreen_orig / 2;
 
-                int dred_orig = zigzag_decode(dec_rice(codec, &red)) + dgreen_halved;
-                int dblue_orig = zigzag_decode(dec_rice(codec, &blue)) + dgreen_halved;
+                int dred_orig = zigzag_decode(rice_decode(codec, &red)) + dgreen_halved;
+                int dblue_orig = zigzag_decode(rice_decode(codec, &blue)) + dgreen_halved;
 
                 int current_red_value = reference_red + dred_orig;
                 int current_blue_value = reference_blue + dblue_orig;
