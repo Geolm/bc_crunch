@@ -42,6 +42,8 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #include <stdlib.h>
 #include <string.h>
 
+#include <stdio.h>
+
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
     #include <arm_neon.h>
     #define BC_CRUNCH_NEON
@@ -608,6 +610,9 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
 
     bc1_block previous = {0};
 
+    uint32_t color_escape_count = 0;
+    uint32_t bitfield_escape_count = 0;
+
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
@@ -650,15 +655,15 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
 
                 int delta_green = current_green - previous_green;
 
-                dred[j] =  zigzag_encode(current_red - previous_red - delta_green/2);
+                dred[j] =  zigzag_encode((int)current_red - (int)previous_red - delta_green/2);
                 dgreen[j] =  zigzag_encode(delta_green);
-                dblue[j] = zigzag_encode(current_blue - previous_blue - delta_green/2);
+                dblue[j] = zigzag_encode((int)current_blue - (int)previous_blue - delta_green/2);
             }
 
-            uint8_t color_byte0 = flag_up[0] << 7 | flag_up[1] << 6 | dgreen[0] << 3 | dgreen[1];
-            if (color_byte0 == 0xff || dgreen[0] > 7 || dgreen[1] > 7 || dblue[0] > 3 || dblue[1] > 3 ||
-                dred[0] > 3 || dred[1] > 3)
+            bool needs_escape = (dgreen[0] > 7 || dgreen[1] > 7 || dblue[0] > 3 || dblue[1] > 3 ||dred[0] > 3 || dred[1] > 3);
 
+            uint8_t color_byte0 = flag_up[0] << 7 | flag_up[1] << 6 | (dgreen[0]&0x7) << 3 | (dgreen[1]&0x7);
+            if (color_byte0 == 0xff || needs_escape)
             {
                 // escape case, paying the full price + one byte :(
                 bs_write_u8(bs, 0xff);
@@ -666,6 +671,8 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
                 bs_write_u8(bs, current->color[0] & 0xff);
                 bs_write_u8(bs, (current->color[1] >> 8) & 0xff);
                 bs_write_u8(bs, current->color[1] & 0xff);
+
+                color_escape_count++;
             }
             else
             {
@@ -700,22 +707,24 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
             }
             else if (mode == 2)
             {
-                uint8_t index0 = (uint8_t) __builtin_ctz(difference);
-                difference ^= (1<<index0);
-                uint8_t index1 = (uint8_t) __builtin_ctz(difference);
-                difference ^= (1<<index1);
+                uint8_t patch_index0 = (uint8_t) __builtin_ctz(difference);
+                difference ^= (1<<patch_index0);
+                uint8_t patch_index1 = (uint8_t) __builtin_ctz(difference);
+                difference ^= (1<<patch_index1);
 
-                // if index2 == index1, there are only two bits to patch
-                uint8_t index2 = index1;
+                // if patch_index2 == patch_index1, there are only two bits to patch
+                uint8_t patch_index2 = patch_index1;
                 if (difference != 0)
-                    index2 = (uint8_t) __builtin_ctz(difference);
+                    patch_index2 = (uint8_t) __builtin_ctz(difference);
 
-                uint16_t bit_diff = index0<<10 | index1 << 5 | index2;
+                uint16_t bit_diff = patch_index0<<10 | patch_index1 << 5 | patch_index2;
                 bs_write_u8(bs, (bit_diff >> 8) & 0xff);
                 bs_write_u8(bs, bit_diff & 0xff);
             }
             else if (mode == 3)
             {
+                bitfield_escape_count++;
+
                 // escape : write the full 32 bits indice bitfield
                 for(uint32_t j=0; j<4; ++j)
                     bs_write_u8(bs, (current->indices >> (j*8)) & 0xff);
@@ -724,6 +733,10 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
             previous = *current;
         }
     }
+
+    float num_blocks = height_blocks * width_blocks;
+
+    printf("color escape %f, bitfield escape %f\n", (float)color_escape_count / num_blocks, (float) bitfield_escape_count / num_blocks);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -754,9 +767,6 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
             bc1_block* current = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y);
 
-            uint8_t dgreen[2], dblue[2], dred[2];
-            uint8_t flag_up[2];
-
             uint8_t color_byte0 = bs_read_u8(bs);
 
             // escape code, full r5g6b5 color encoded :(
@@ -769,6 +779,7 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
             }
             else
             {
+                uint8_t flag_up[2];
                 flag_up[0] = (color_byte0>>7) & 0x1;
                 flag_up[1] = (color_byte0>>6) & 0x1;
                 uint8_t color_byte1 = bs_read_u8(bs);
@@ -786,15 +797,15 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
                 {
                     uint8_t reference_red, reference_green, reference_blue;
                     bc1_extract_565(previous.color[j], &reference_red, &reference_green, &reference_blue);
-                    if (y>0 && x!=0 && flag_up[j])
+                    if (flag_up[j])
                     {
                         bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
                         bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
                     }
 
-                    uint8_t current_green_value = reference_green + dgreen[j];
-                    uint8_t current_red_value = reference_red + dred[j];
-                    uint8_t current_blue_value = reference_blue + dblue[j];
+                    uint8_t current_green_value = (int)reference_green + dgreen[j];
+                    uint8_t current_red_value = (int)reference_red + dred[j];
+                    uint8_t current_blue_value = (int)reference_blue + dblue[j];
 
                     current->color[j] = bc1_pack_565(current_red_value, current_green_value, current_blue_value);
                 }
@@ -813,14 +824,14 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
             else if (mode == 2)
             {
                 uint16_t packed_indices = (bs_read_u8(bs) << 8) | bs_read_u8(bs);
-                uint8_t index0 = (packed_indices>>10) & 0x3f;
-                uint8_t index1 = (packed_indices>>5) & 0x3f;
-                uint8_t index2 = packed_indices & 0x3f;
-                current->indices ^= (1 << index0);
-                current->indices ^= (1 << index1);
+                uint8_t patch_index0 = (packed_indices>>10) & 0x1f;
+                uint8_t patch_index1 = (packed_indices>>5) & 0x1f;
+                uint8_t patch_index2 = packed_indices & 0x1f;
+                current->indices ^= (1 << patch_index0);
+                current->indices ^= (1 << patch_index1);
 
-                if (index2 != index1)
-                    current->indices ^= (1 << index2);
+                if (patch_index2 != patch_index1)
+                    current->indices ^= (1 << patch_index2);
             }
             else if (mode == 3)
             {
@@ -833,6 +844,8 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
         }
     }
 }
+
+/*
 
 //----------------------------------------------------------------------------------------------------------------------------
 void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
@@ -1049,6 +1062,8 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     }
 }
 
+*/
+
 /*
 BC4 average compression ratio history
 
@@ -1090,65 +1105,65 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
     assert(cruncher_memory != NULL && "bc_crunch needs memory to run, allocate a buffer of size crunch_min_size()");
     assert(input != NULL);
 
-    range_codec codec;
-    enc_init(&codec, (uint8_t*) output, (uint32_t)length);
+    bytestream stream;
+    bs_init(&stream, output, length);
 
     switch(format)
     {
     case bc1 : 
         {
-            bc1_crunch(&codec, cruncher_memory, input, sizeof(bc1_block), width, height);
+            bc1_crunch(&stream, cruncher_memory, input, sizeof(bc1_block), width, height);
             break;
         }
-    case bc3 : 
-        {
-            size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
-            bc4_crunch(&codec, cruncher_memory, input, block_size, width, height);
-            bc1_crunch(&codec, cruncher_memory, ptr_shift_const(input, sizeof(bc4_block)), block_size, width, height);
-            break;
-        }
-    case bc4 : 
-        {
-            bc4_crunch(&codec, cruncher_memory, input, sizeof(bc4_block), width, height);
-            break;
-        }
-    case bc5 :
-        {
-            size_t block_size = sizeof(bc4_block) * 2;
-            bc4_crunch(&codec, cruncher_memory, input, block_size, width, height);
-            bc4_crunch(&codec, cruncher_memory, ptr_shift_const(input, sizeof(bc4_block)), block_size, width, height);
-            break;
-        }
+    // case bc3 : 
+    //     {
+    //         size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
+    //         bc4_crunch(&codec, cruncher_memory, input, block_size, width, height);
+    //         bc1_crunch(&codec, cruncher_memory, ptr_shift_const(input, sizeof(bc4_block)), block_size, width, height);
+    //         break;
+    //     }
+    // case bc4 : 
+    //     {
+    //         bc4_crunch(&codec, cruncher_memory, input, sizeof(bc4_block), width, height);
+    //         break;
+    //     }
+    // case bc5 :
+    //     {
+    //         size_t block_size = sizeof(bc4_block) * 2;
+    //         bc4_crunch(&codec, cruncher_memory, input, block_size, width, height);
+    //         bc4_crunch(&codec, cruncher_memory, ptr_shift_const(input, sizeof(bc4_block)), block_size, width, height);
+    //         break;
+    //     }
 
     default: break;
     }
-    return enc_done(&codec);
+    return bs_offset(&stream);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
 void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, enum bc_format format, void* output)
 {
-    range_codec codec;
-    dec_init(&codec, (const uint8_t*)input, (uint32_t)length);
+    bytestream stream;
+    bs_init(&stream, (void*)input, length);
 
     switch(format)
     {
-    case bc1 : bc1_decrunch(&codec, width, height, output, sizeof(bc1_block)); break;
-    case bc3 : 
-        {
-            size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
-            bc4_decrunch(&codec, width, height, output, block_size);
-            bc1_decrunch(&codec, width, height, ptr_shift(output, sizeof(bc4_block)), block_size);
-            break;
-        }
-    case bc4 : bc4_decrunch(&codec, width, height, output, sizeof(bc4_block)); break;
-    case bc5 :
-        {
-            size_t block_size = sizeof(bc4_block) * 2;
-            bc4_decrunch(&codec, width, height, output, block_size);
-            bc4_decrunch(&codec, width, height, ptr_shift(output, sizeof(bc4_block)), block_size);
-            break;
-        }
+    case bc1 : bc1_decrunch(&stream, width, height, output, sizeof(bc1_block)); break;
+    // case bc3 : 
+    //     {
+    //         size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
+    //         bc4_decrunch(&codec, width, height, output, block_size);
+    //         bc1_decrunch(&codec, width, height, ptr_shift(output, sizeof(bc4_block)), block_size);
+    //         break;
+    //     }
+    // case bc4 : bc4_decrunch(&codec, width, height, output, sizeof(bc4_block)); break;
+    // case bc5 :
+    //     {
+    //         size_t block_size = sizeof(bc4_block) * 2;
+    //         bc4_decrunch(&codec, width, height, output, block_size);
+    //         bc4_decrunch(&codec, width, height, ptr_shift(output, sizeof(bc4_block)), block_size);
+    //         break;
+    //     }
     default: break;
     }
 }
