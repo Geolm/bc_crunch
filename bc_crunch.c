@@ -97,178 +97,50 @@ static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 1
 //----------------------------------------------------------------------------------------------------------------------
 static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
-
 //----------------------------------------------------------------------------------------------------------------------
-typedef struct bitstream
+typedef struct bytestream
 {
     uint8_t* base;
     uint8_t* ptr;
-    const uint8_t* end;
-    uint32_t bitbuf;
-    uint32_t bitcnt;
-} bitstream;
+    uint8_t* end;
+} bytestream;
 
 //----------------------------------------------------------------------------------------------------------------------
-static inline void bs_init(bitstream* bs, void* buffer, size_t size)
+static inline void bs_init(bytestream* bs, void* buffer, size_t size)
 {
     bs->base = (uint8_t*)buffer;
-    bs->ptr = bs->base;
-    bs->end = bs->base + size;
-    bs->bitbuf = 0;
-    bs->bitcnt = 0;
+    bs->ptr  = bs->base;
+    bs->end  = bs->base + size;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-static inline size_t bs_flush(bitstream* bs)
+static inline uint32_t bs_remaining(const bytestream* bs)
 {
-    if (bs->bitcnt)
-    {
-        /* write-mode: pad with zeros */
-        if (bs->ptr < bs->end)
-            *bs->ptr++ = (uint8_t)bs->bitbuf;
-
-        bs->bitbuf = 0;
-        bs->bitcnt = 0;
-    }
-
-    return (size_t)(bs->ptr - bs->base);
+    return (uint32_t)(bs->end - bs->ptr);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-static inline void bs_put_bits(bitstream* bs, uint32_t bits, uint32_t count)
+static inline void bs_write_u8(bytestream* bs, uint8_t v)
 {
-    bs->bitbuf |= bits << bs->bitcnt;
-    bs->bitcnt += count;
+    if (bs->ptr >= bs->end)
+        return;
 
-    while (bs->bitcnt >= 8)
-    {
-        if (bs->ptr < bs->end)
-            *bs->ptr++ = (uint8_t)bs->bitbuf;
-
-        bs->bitbuf >>= 8;
-        bs->bitcnt  -= 8;
-    }
+    *bs->ptr++ = v;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-static inline uint32_t bs_get_bits(bitstream* bs, uint32_t count)
+static inline uint8_t bs_read_u8(bytestream* bs)
 {
-    while (bs->bitcnt < count)
-    {
-        if (bs->ptr < bs->end)
-            bs->bitbuf |= (uint32_t)(*bs->ptr++) << bs->bitcnt;
+    if (bs->ptr >= bs->end)
+        return 0;
 
-        bs->bitcnt += 8;
-    }
-
-    uint32_t v = bs->bitbuf & ((1u << count) - 1);
-    bs->bitbuf >>= count;
-    bs->bitcnt  -= count;
-    return v;
+    return *bs->ptr++;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-typedef struct
+static inline uint32_t bs_offset(const bytestream* bs)
 {
-    uint32_t k;
-    uint32_t sum;
-    uint32_t count;
-} rice_model;
-
-//----------------------------------------------------------------------------------------------------------------------
-void rice_model_init(rice_model* model)
-{
-    model->k = 0;
-    model->sum = 0;
-    model->count = 0;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-void rice_model_update(rice_model* model, uint32_t value)
-{
-    if (model->sum > (0xFFFFFFFFU - value))
-    {
-        model->sum = 0;
-        model->count = 0;
-    }
-
-    model->sum += value;
-    model->count++;
-
-    if ((model->count & 31) == 0)
-    {
-        uint32_t mean = model->sum / model->count;
-
-        // map mean to best k: k ≈ log2(mean)
-        model->k = (mean > 0) ? (31 - __builtin_clz(mean)) : 0;
-        
-        // Cap k at 8, because q = rank >> 8 will usually be 0 or 1 
-        // for an 8-bit alphabet.
-        if (model->k > 8) model->k = 8;
-    }
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline void rice_encode(bitstream* bs, rice_model* model, uint32_t value)
-{
-    uint32_t q = value >> model->k;
-    uint32_t r = value & ((1u << model->k) - 1);
-
-    // q zeros
-    if (q)
-        bs_put_bits(bs, 0, q);
-
-    // terminating 1
-    bs_put_bits(bs, 1, 1);
-
-    if (model->k)
-        bs_put_bits(bs, r, model->k);
-
-    rice_model_update(model, value);
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline uint32_t bs_get_unary(bitstream* bs)
-{
-    uint32_t q = 0;
-
-    for (;;)
-    {
-        if (bs->bitcnt == 0)
-        {
-            if (bs->ptr < bs->end)
-            {
-                bs->bitbuf = *bs->ptr++;
-                bs->bitcnt = 8;
-            }
-        }
-
-        uint32_t tz = __builtin_ctz(bs->bitbuf | (1u << bs->bitcnt));
-        q += tz;
-        bs->bitbuf >>= tz;
-        bs->bitcnt  -= tz;
-
-        if (bs->bitcnt)
-        {
-            // consume the terminating 1
-            bs->bitbuf >>= 1;
-            bs->bitcnt--;
-            break;
-        }
-    }
-
-    return q;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-uint32_t rice_decode(bitstream* bs, rice_model* model)
-{
-    uint32_t q = bs_get_unary(bs);
-    uint32_t r = model->k ? bs_get_bits(bs, model->k) : 0;
-
-    uint32_t value = (q << model->k) | r;
-    rice_model_update(model, value);
-    return value;
+    return (uint32_t)(bs->ptr - bs->base);
 }
 
 // Maps signed:  0, -1,  1, -2,  2
@@ -284,6 +156,7 @@ static inline int32_t zigzag_decode(uint32_t n)
 {
     return (int32_t)((n >> 1) ^ (-(int32_t)(n & 1)));
 }
+
 
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct bc1_block
@@ -714,7 +587,7 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t dat
 // }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_crunch(bitstream* bs, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
+void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
@@ -728,33 +601,13 @@ void bc1_crunch(bitstream* bs, void* cruncher_memory, const void* input, size_t 
     uint32_t top_table_size;
     build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
 
-    // write the table
-    rice_model table_entry;
-    rice_model_init(&table_entry);
+    bs_write_u8(bs, (uint8_t)(top_table_size-1));
 
-    bs_put_bits(bs, top_table_size-1, TABLE_INDEX_NUM_BITS);   // entries count
-    for(uint32_t j=0; j<4; ++j)
-        bs_put_bits(bs, (top_table[0] >> (j*8)) & 0xff, 8);    // first entry not compressed
-
-    for(uint32_t i=1; i<top_table_size; ++i)
-    {
-        // table is sorted from small to big, so diff is always positive
-        uint32_t diff = top_table[i] - top_table[i-1];
-
+    for(uint32_t i=0; i<top_table_size; ++i)
         for(uint32_t j=0; j<4; ++j)
-            rice_encode(bs, &table_entry, (diff >> (j*8)) & 0xff);
-    }
+            bs_write_u8(bs, (top_table[i] >> (j*8)) & 0xff);
 
-    rice_model red, green, blue;
-    rice_model_init(&red);
-    rice_model_init(&green);
-    rice_model_init(&blue);
-
-    rice_model table_difference;
-    model_init(&table_difference, 256);
-
-    bc1_block empty_block = {0};
-    const bc1_block* previous = &empty_block;
+    bc1_block previous = {0};
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
@@ -763,14 +616,19 @@ void bc1_crunch(bitstream* bs, void* cruncher_memory, const void* input, size_t 
             // zig-zag pattern delta compression for colors
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
             const bc1_block* current = get_block(input, stride, width_blocks, zigzag_x, y);
+
+            uint8_t dgreen[2], dblue[2], dred[2];
+            uint8_t flag_up[2];
+            
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t current_red, current_green, current_blue;
                 uint8_t previous_red, previous_green, previous_blue;
 
                 bc1_extract_565(current->color[j], &current_red, &current_green, &current_blue);
-                bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
+                bc1_extract_565(previous.color[j], &previous_red, &previous_green, &previous_blue);
 
+                flag_up[j] = 0;
                 if (y>0 && x!=0)
                 {
                     const bc1_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
@@ -780,7 +638,7 @@ void bc1_crunch(bitstream* bs, void* cruncher_memory, const void* input, size_t 
                     int previous_delta = int_abs(current_red - previous_red) + int_abs(current_green-previous_green) + int_abs(current_blue-previous_blue);
                     int up_delta = int_abs(current_red-up_red) + int_abs(current_green-up_green) + int_abs(current_blue-up_blue);
 
-                    bs_put_bits(bs, (up_delta < previous_delta) ? 1 : 0, 1);
+                    flag_up[j] = (up_delta < previous_delta) ? 1 : 0;
 
                     // overwrite previous value to avoid using a new set of variables
                     if (up_delta < previous_delta)
@@ -791,45 +649,80 @@ void bc1_crunch(bitstream* bs, void* cruncher_memory, const void* input, size_t 
                     }
                 }
 
-                int dred = current_red - previous_red;
-                int dgreen = current_green - previous_green;
-                int dblue = current_blue - previous_blue;
+                int delta_green = current_green - previous_green;
 
-                // first encode green delta
-                rice_encode(bs, &green, zigzag_encode(dgreen));
+                dred[j] =  zigzag_encode(current_red - previous_red - delta_green/2);
+                dgreen[j] =  zigzag_encode(delta_green);
+                dblue[j] = zigzag_encode(current_blue - previous_blue - delta_green/2);
+            }
 
-                // then encode red and blue delta based on green delta
-                // assuming some relation between green and other components
-                dgreen /= 2;
-                dred -= dgreen;
-                dblue -= dgreen;
+            uint8_t color_byte0 = flag_up[0] << 7 | flag_up[1] << 6 | dgreen[0] << 3 | dgreen[1];
+            if (color_byte0 == 0xff || dgreen[0] > 7 || dgreen[1] > 7 || dblue[0] > 3 || dblue[1] > 3 ||
+                dred[0] > 3 || dred[1] > 3)
 
-                rice_encode(bs, &red, zigzag_encode(dred));
-                rice_encode(bs, &blue, zigzag_encode(dblue));
+            {
+                // escape case, paying the full price + one byte :(
+                bs_write_u8(bs, 0xff);
+                bs_write_u8(bs, (current->color[0] >> 8) & 0xff);
+                bs_write_u8(bs, current->color[0] & 0xff);
+                bs_write_u8(bs, (current->color[1] >> 8) & 0xff);
+                bs_write_u8(bs, current->color[1] & 0xff);
+            }
+            else
+            {
+                bs_write_u8(bs, color_byte0);
+                bs_write_u8(bs, dred[0] << 6 | dred[1] << 4 | dblue[0] << 2 | dblue[1]);
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
             // and the delta with this reference
-            uint32_t reference = nearest32(top_table, top_table_size, current->indices) & 0xffff;
-            enc_put(codec, &table_index, reference);
+            uint32_t search_result = nearest32(top_table, top_table_size, current->indices);
+            uint32_t reference_index =  search_result & 0x3f;
+            uint32_t score = (search_result >> 16) & 0xffff;
 
             // xor the difference and encode (could be 0 if equal to reference)
-            uint32_t difference = current->indices ^ top_table[reference];
+            uint32_t difference = current->indices ^ top_table[reference_index];
 
-            uint32_t mask = 0;
-            if ((difference & 0x000000FF) != 0) mask |= 1;
-            if ((difference & 0x0000FF00) != 0) mask |= 2;
-            if ((difference & 0x00FF0000) != 0) mask |= 4;
-            if ((difference & 0xFF000000) != 0) mask |= 8;
+            uint8_t mode;
+            if (score == 0)
+                mode = 0;
+            else if (score == 1)
+                mode = 1;
+            else if (score < 4)
+                mode = 2;
+            else
+                mode = 3;
 
-            enc_put(codec, &diff_mask, mask);
+            bs_write_u8(bs, (mode<<6) | ((uint8_t) reference_index));
 
-            // only encode the bytes that are actually non-zero
-            for(uint32_t j=0; j<4; ++j)
-                if (mask & (1u << j))
-                    enc_put(codec, &table_difference, (difference >> (j*8)) & 0xff);
+            if (mode == 1)
+            {
+                bs_write_u8(bs, (uint8_t) __builtin_ctz(difference));
+            }
+            else if (mode == 2)
+            {
+                uint8_t index0 = (uint8_t) __builtin_ctz(difference);
+                difference ^= (1<<index0);
+                uint8_t index1 = (uint8_t) __builtin_ctz(difference);
+                difference ^= (1<<index1);
 
-            previous = current;
+                // if index2 == index1, there are only two bits to patch
+                uint8_t index2 = index1;
+                if (difference != 0)
+                    index2 = (uint8_t) __builtin_ctz(difference);
+
+                uint16_t bit_diff = index0<<10 | index1 << 5 | index2;
+                bs_write_u8(bs, (bit_diff >> 8) & 0xff);
+                bs_write_u8(bs, bit_diff & 0xff);
+            }
+            else if (mode == 3)
+            {
+                // escape : write the full 32 bits indice bitfield
+                for(uint32_t j=0; j<4; ++j)
+                    bs_write_u8(bs, (current->indices >> (j*8)) & 0xff);
+            }
+
+            previous = *current;
         }
     }
 }
