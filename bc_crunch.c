@@ -59,7 +59,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 
 // enable this macro to increase BC1 compression ratio by about 1% but compression is slower (50%)
 // decompression speed and output is not affected by this macro
-// #define BC_CRUNCH_USE_VECTOR_QUANTIZATION
+#define BC_CRUNCH_USE_VECTOR_QUANTIZATION
 
 //----------------------------------------------------------------------------------------------------------------------------
 // Private structures & functions
@@ -73,8 +73,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
-#define TABLE_INDEX_NUM_BITS (8)
-#define TABLE_SIZE (1<<TABLE_INDEX_NUM_BITS)
+#define TABLE_SIZE (64)
 #define COLOR_DELTA_NUM_BITS (7)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
@@ -488,8 +487,8 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
     vq_top_table(input, stride, num_blocks, output, num_entries);
 #endif
 
-    // sort table for compression
-    qsort(output, *num_entries, sizeof(uint32_t), compare_entries);
+    // // sort table for compression
+    // qsort(output, *num_entries, sizeof(uint32_t), compare_entries);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -728,50 +727,24 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* output, size_t stride)
+void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output, size_t stride)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
 
-    // range_model red, green, blue;
-    // model_init(&red,   1 << COLOR_DELTA_NUM_BITS);
-    // model_init(&green, 1 << COLOR_DELTA_NUM_BITS);
-    // model_init(&blue,  1 << COLOR_DELTA_NUM_BITS);
-
-    rice_model red, green, blue;
-    rice_model_init(&red);
-    rice_model_init(&green);
-    rice_model_init(&blue);
-
-    range_model table_entry;
-    model_init(&table_entry, 256);
-
     uint32_t top_table[TABLE_SIZE];
-    uint32_t top_table_size = dec_get_bits(codec, TABLE_INDEX_NUM_BITS)+1;
+    uint32_t top_table_size = bs_read_u8(bs) + 1;
 
-    top_table[0] = 0;
-    for(uint32_t j=0; j<4; ++j)
-        top_table[0] |= dec_get_bits(codec, 8) << (j*8);
-
-    for(uint32_t i=1; i<top_table_size; ++i)
+    for(uint32_t i=0; i<top_table_size; ++i)
     {
-        uint32_t diff = 0;
+        top_table[i] = 0;
         for(uint32_t j=0; j<4; ++j)
-            diff |= dec_get(codec, &table_entry) << (j*8);
-
-        top_table[i] = top_table[i-1] + diff;
+            top_table[i] |= bs_read_u8(bs) << (j*8);
     }
 
-    range_model table_index, table_difference, diff_mask, color_reference;
-    model_init(&table_index, top_table_size);
-    model_init(&table_difference, 256);
-    model_init(&diff_mask, 16);
-    model_init(&color_reference, 2);
-
-    bc1_block empty_block = {0};
-    bc1_block* previous = &empty_block;
+    bc1_block previous = {0};
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
@@ -780,46 +753,83 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
             // zig-zag pattern color
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
             bc1_block* current = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y);
-            for (uint32_t j = 0; j < 2; ++j)
+
+            uint8_t dgreen[2], dblue[2], dred[2];
+            uint8_t flag_up[2];
+
+            uint8_t color_byte0 = bs_read_u8(bs);
+
+            // escape code, full r5g6b5 color encoded :(
+            if (color_byte0 == 0xff)
             {
-                uint8_t reference_red, reference_green, reference_blue;
-                bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
-                if (y>0 && x!=0 && dec_get(codec, &color_reference))
+                current->color[0] = bs_read_u8(bs) << 8;
+                current->color[0]|= bs_read_u8(bs);
+                current->color[1] = bs_read_u8(bs) << 8;
+                current->color[1]|= bs_read_u8(bs);
+            }
+            else
+            {
+                flag_up[0] = (color_byte0>>7) & 0x1;
+                flag_up[1] = (color_byte0>>6) & 0x1;
+                uint8_t color_byte1 = bs_read_u8(bs);
+
+                int dgreen[2], dred[2], dblue[2];
+
+                dgreen[0] = zigzag_decode((color_byte0>>3)&0x7);
+                dgreen[1] = zigzag_decode(color_byte0&0x7);
+                dred[0] = zigzag_decode((color_byte1>>6)&0x3) + dgreen[0] / 2;
+                dred[1] = zigzag_decode((color_byte1>>4)&0x3) + dgreen[1] / 2;
+                dblue[0] = zigzag_decode((color_byte1>>2)&0x3) + dgreen[0] / 2;
+                dblue[1] = zigzag_decode(color_byte1&0x3) + dgreen[1] / 2;
+
+                for (uint32_t j = 0; j < 2; ++j)
                 {
-                    bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
-                    bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
+                    uint8_t reference_red, reference_green, reference_blue;
+                    bc1_extract_565(previous.color[j], &reference_red, &reference_green, &reference_blue);
+                    if (y>0 && x!=0 && flag_up[j])
+                    {
+                        bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
+                        bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
+                    }
+
+                    uint8_t current_green_value = reference_green + dgreen[j];
+                    uint8_t current_red_value = reference_red + dred[j];
+                    uint8_t current_blue_value = reference_blue + dblue[j];
+
+                    current->color[j] = bc1_pack_565(current_red_value, current_green_value, current_blue_value);
                 }
-
-                // uint8_t delta_green = (uint8_t)dec_get(codec, &green);
-                // uint8_t delta_red = (uint8_t)dec_get(codec, &red);
-                // uint8_t delta_blue = (uint8_t)dec_get(codec, &blue);
-
-                // red and blue delta are based on green delta
-                int dgreen_orig = zigzag_decode(rice_decode(codec, &green));
-                int current_green_value = reference_green + dgreen_orig;
-                int dgreen_halved = dgreen_orig / 2;
-
-                int dred_orig = zigzag_decode(rice_decode(codec, &red)) + dgreen_halved;
-                int dblue_orig = zigzag_decode(rice_decode(codec, &blue)) + dgreen_halved;
-
-                int current_red_value = reference_red + dred_orig;
-                int current_blue_value = reference_blue + dblue_orig;
-
-                current->color[j] = bc1_pack_565((uint8_t)current_red_value, (uint8_t)current_green_value, (uint8_t)current_blue_value);
             }
 
-            // indices difference with top table
-            uint32_t reference = dec_get(codec, &table_index);
-            uint32_t mask = dec_get(codec, &diff_mask);
+            uint8_t bitfield_byte0 = bs_read_u8(bs);
+            uint8_t mode = (bitfield_byte0>>6) & 0x3;
+            uint8_t reference_index = bitfield_byte0 & 0x3f;
 
-            uint32_t difference=0;
-            for(uint32_t j=0; j<4; ++j)
-                if (mask & (1 << j))
-                    difference = difference | (dec_get(codec, &table_difference) << (j*8));
+            current->indices = top_table[reference_index];
+            
+            if (mode == 1)
+            {
+                current->indices ^= (1 << bs_read_u8(bs));
+            }
+            else if (mode == 2)
+            {
+                uint16_t packed_indices = (bs_read_u8(bs) << 8) | bs_read_u8(bs);
+                uint8_t index0 = (packed_indices>>10) & 0x3f;
+                uint8_t index1 = (packed_indices>>5) & 0x3f;
+                uint8_t index2 = packed_indices & 0x3f;
+                current->indices ^= (1 << index0);
+                current->indices ^= (1 << index1);
 
-            current->indices =  difference ^ top_table[reference];
+                if (index2 != index1)
+                    current->indices ^= (1 << index2);
+            }
+            else if (mode == 3)
+            {
+                current->indices = 0;
+                for(uint32_t j=0; j<4; ++j)
+                    current->indices |= bs_read_u8(bs) << (j*8);
+            }
 
-            previous = current;
+            previous = *current;
         }
     }
 }
