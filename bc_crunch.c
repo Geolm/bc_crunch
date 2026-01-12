@@ -865,8 +865,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     model_init(&diff_mask, 16);
     model_init(&color_reference, 2);
 
-    bc1_block empty_block = {0};
-    const bc1_block* previous = &empty_block;
+    bc1_block previous = {0};
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
@@ -881,7 +880,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 uint8_t previous_red, previous_green, previous_blue;
 
                 bc1_extract_565(current->color[j], &current_red, &current_green, &current_blue);
-                bc1_extract_565(previous->color[j], &previous_red, &previous_green, &previous_blue);
+                bc1_extract_565(previous.color[j], &previous_red, &previous_green, &previous_blue);
 
                 if (y>0 && x!=0)
                 {
@@ -941,7 +940,7 @@ void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                 if (mask & (1u << j))
                     enc_put(codec, &table_difference, (difference >> (j*8)) & 0xff);
 
-            previous = current;
+            previous = *current;
         }
     }
 }
@@ -984,8 +983,7 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     model_init(&diff_mask, 16);
     model_init(&color_reference, 2);
 
-    bc1_block empty_block = {0};
-    bc1_block* previous = &empty_block;
+    bc1_block previous = {0};
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
@@ -997,7 +995,7 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
             for (uint32_t j = 0; j < 2; ++j)
             {
                 uint8_t reference_red, reference_green, reference_blue;
-                bc1_extract_565(previous->color[j], &reference_red, &reference_green, &reference_blue);
+                bc1_extract_565(previous.color[j], &reference_red, &reference_green, &reference_blue);
                 if (y>0 && x!=0 && dec_get(codec, &color_reference))
                 {
                     bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
@@ -1033,7 +1031,7 @@ void bc1_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
 
             current->indices =  difference ^ top_table[reference];
 
-            previous = current;
+            previous = *current;
         }
     }
 }
@@ -1065,8 +1063,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
     for(uint32_t i=0; i<16; ++i)
         model_init(&dict_delta[i], 1<<3);
 
-    bc4_block empty_block = {.color = {0, 128}};
-    const bc4_block* previous = &empty_block;
+    bc4_block previous = {.color = {0, 128}};
 
     // dictionary initialization
     uint64_t dictionary[DICTIONARY_SIZE];
@@ -1079,7 +1076,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
         {
             const bc4_block* current = get_block(input, stride, width_blocks, x, y);
 
-            int reference = previous->color[0];
+            int reference = previous.color[0];
             if (y>0)
             {
                 const bc4_block* up = get_block(input, stride, width_blocks, x, y-1);
@@ -1142,7 +1139,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
                     block_previous = data;
                 }
             }
-            previous = current;
+            previous = *current;
         }
     }
 }
@@ -1173,8 +1170,7 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
     for(uint32_t i=0; i<16; ++i)
         model_init(&dict_delta[i], 1<<3);
 
-    bc4_block empty_block = {.color = {0, 128}};
-    bc4_block* previous = &empty_block;
+    bc4_block previous = {.color = {0, 128}};
 
     // dictionary initialization
     uint64_t dictionary[DICTIONARY_SIZE];
@@ -1186,7 +1182,7 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
             bc4_block* current = (bc4_block*) get_block(output, stride, width_blocks, x, y);
-            int reference = previous->color[0];
+            int reference = previous.color[0];
             if (y>0)
             {
                 const bc4_block* up = get_block(output, stride, width_blocks, x, y-1);
@@ -1248,7 +1244,7 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                 memmove(&dictionary[1], &dictionary[0], (DICTIONARY_SIZE - 1) * sizeof(uint64_t));
                 dictionary[0] = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
             }
-            previous = current;
+            previous = *current;
         }
     }
 }
