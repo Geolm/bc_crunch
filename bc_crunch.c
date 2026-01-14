@@ -75,7 +75,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
-#define TABLE_SIZE (64)
+#define TABLE_SIZE (256)
 #define COLOR_DELTA_NUM_BITS (7)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
@@ -587,6 +587,117 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t dat
 //     return &indices[16];
 // }
 
+//----------------------------------------------------------------------------------------------------------------------
+static const uint8_t bytes_for_k_table[9] = 
+{
+    0,  // k=0
+    5,  // k=1
+    9,  // k=2
+    13, // k=3
+    16, // k=4
+    18, // k=5
+    20, // k=6
+    22, // k=7
+    24  // k=8
+};
+
+//----------------------------------------------------------------------------------------------------------------------
+static inline uint32_t comb_nCk(uint32_t n, uint32_t k)
+{
+    if (k > n) return 0;
+    if (k == 0 || k == n) return 1;
+    if (k > n - k) k = n - k;
+
+    uint64_t result = 1;
+    for (uint32_t i = 1; i <= k; ++i)
+    {
+        // Perform multiplication in 64-bit to avoid overflow before division
+        result = result * (n - (k - i)) / i;
+    }
+
+    return (uint32_t)result;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+static uint32_t comb_rank_encode(uint32_t mask, uint32_t k)
+{
+    uint32_t rank = 0;
+    uint32_t remaining = k;
+
+    for (int bit = 31; bit >= 0; --bit)
+    {
+        if (mask & (1u << bit))
+        {
+            rank += comb_nCk(bit, remaining);
+            remaining--;
+            if (remaining == 0)
+                break;
+        }
+    }
+    return rank;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+static uint32_t comb_rank_decode(uint32_t rank, uint32_t k)
+{
+    uint32_t mask = 0;
+    uint32_t remaining = k;
+
+    for (int bit = 31; bit >= 0; --bit)
+    {
+        if (remaining == 0) break;
+
+        uint32_t c = comb_nCk(bit, remaining);
+        if (rank >= c)
+        {
+            rank -= c;
+            mask |= (1u << bit);
+            remaining--;
+        }
+    }
+    return mask;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+// bits needed to store rank of a 32-bit bitfield with k bits set
+static const uint8_t bits_for_k[33] = 
+{
+    0,  // k=0
+    5,  // k=1
+    9,  // k=2
+    13, // k=3
+    16, // k=4
+    18, // k=5
+    20, // k=6
+    22, // k=7
+    24, // k=8
+    25, // k=9
+    27, // k=10
+    28, // k=11
+    29, // k=12
+    30, // k=13
+    31, // k=14
+    31, // k=15
+    32, // k=16
+    32, // k=17
+    31, // k=18
+    31, // k=19
+    30, // k=20
+    29, // k=21
+    28, // k=22
+    27, // k=23
+    25, // k=24
+    24, // k=25
+    22, // k=26
+    20, // k=27
+    18, // k=28
+    16, // k=29
+    13, // k=30
+    9,  // k=31
+    5   // k=32
+};
+
+
 //----------------------------------------------------------------------------------------------------------------------------
 void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
@@ -611,7 +722,6 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
     bc1_block previous = {0};
 
     uint32_t color_escape_count = 0;
-    uint32_t bitfield_escape_count = 0;
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
@@ -686,57 +796,25 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
             uint32_t reference_index =  search_result & 0x3f;
             uint32_t score = (search_result >> 16) & 0xffff;
 
-            // xor the difference and encode (could be 0 if equal to reference)
             uint32_t difference = current->indices ^ top_table[reference_index];
+            uint32_t k = popcount(difference);
 
-            uint8_t mode;
-            if (score == 0)
-                mode = 0;
-            else if (score == 1)
-                mode = 1;
-            else if (score < 4)
-                mode = 2;
-            else
-                mode = 3;
+            uint32_t rank = comb_rank_encode(difference, k);
+            uint32_t num_bits = bits_for_k[k];
+            uint32_t bit_index = 2;
 
-            bs_write_u8(bs, (mode<<6) | ((uint8_t) reference_index));
+            bs_write_u8(bs, reference_index);
+            bs_write_u8(bs, ((rank&0x3) << 6) | (k&0x3f));
 
-            if (mode == 1)
+            while (bit_index < num_bits)
             {
-                bs_write_u8(bs, (uint8_t) __builtin_ctz(difference));
-            }
-            else if (mode == 2)
-            {
-                uint8_t patch_index0 = (uint8_t) __builtin_ctz(difference);
-                difference ^= (1<<patch_index0);
-                uint8_t patch_index1 = (uint8_t) __builtin_ctz(difference);
-                difference ^= (1<<patch_index1);
-
-                // if patch_index2 == patch_index1, there are only two bits to patch
-                uint8_t patch_index2 = patch_index1;
-                if (difference != 0)
-                    patch_index2 = (uint8_t) __builtin_ctz(difference);
-
-                uint16_t bit_diff = patch_index0<<10 | patch_index1 << 5 | patch_index2;
-                bs_write_u8(bs, (bit_diff >> 8) & 0xff);
-                bs_write_u8(bs, bit_diff & 0xff);
-            }
-            else if (mode == 3)
-            {
-                bitfield_escape_count++;
-
-                // escape : write the full 32 bits indice bitfield
-                for(uint32_t j=0; j<4; ++j)
-                    bs_write_u8(bs, (current->indices >> (j*8)) & 0xff);
+                bs_write_u8(bs, (rank >> bit_index) & 0xff);
+                bit_index += 8;
             }
 
             previous = *current;
         }
     }
-
-    float num_blocks = height_blocks * width_blocks;
-
-    printf("color escape %f, bitfield escape %f\n", (float)color_escape_count / num_blocks, (float) bitfield_escape_count / num_blocks);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -811,34 +889,24 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
                 }
             }
 
-            uint8_t bitfield_byte0 = bs_read_u8(bs);
-            uint8_t mode = (bitfield_byte0>>6) & 0x3;
-            uint8_t reference_index = bitfield_byte0 & 0x3f;
+            uint8_t reference_index = bs_read_u8(bs);
 
-            current->indices = top_table[reference_index];
-            
-            if (mode == 1)
-            {
-                current->indices ^= (1 << bs_read_u8(bs));
-            }
-            else if (mode == 2)
-            {
-                uint16_t packed_indices = (bs_read_u8(bs) << 8) | bs_read_u8(bs);
-                uint8_t patch_index0 = (packed_indices>>10) & 0x1f;
-                uint8_t patch_index1 = (packed_indices>>5) & 0x1f;
-                uint8_t patch_index2 = packed_indices & 0x1f;
-                current->indices ^= (1 << patch_index0);
-                current->indices ^= (1 << patch_index1);
+            uint32_t first_byte = bs_read_u8(bs);
+            uint32_t rank = first_byte>>6;
+            uint32_t k = first_byte & 0x3f;
 
-                if (patch_index2 != patch_index1)
-                    current->indices ^= (1 << patch_index2);
-            }
-            else if (mode == 3)
+            uint32_t num_bits = bits_for_k[k];
+            uint32_t bit_index = 2;
+
+            while (bit_index < num_bits)
             {
-                current->indices = 0;
-                for(uint32_t j=0; j<4; ++j)
-                    current->indices |= bs_read_u8(bs) << (j*8);
+                rank |= bs_read_u8(bs) << bit_index;
+                bit_index += 8; 
             }
+
+            uint32_t difference = comb_rank_decode(rank, k);
+
+            current->indices = top_table[reference_index] ^ difference;
 
             previous = *current;
         }
