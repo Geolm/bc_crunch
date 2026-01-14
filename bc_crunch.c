@@ -75,7 +75,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
-#define TABLE_SIZE (256)
+#define TABLE_SIZE (63)
 #define COLOR_DELTA_NUM_BITS (7)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
@@ -588,114 +588,61 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t dat
 // }
 
 //----------------------------------------------------------------------------------------------------------------------
-static const uint8_t bytes_for_k_table[9] = 
+static const uint8_t bitfield_tables[3][16] = 
 {
-    0,  // k=0
-    5,  // k=1
-    9,  // k=2
-    13, // k=3
-    16, // k=4
-    18, // k=5
-    20, // k=6
-    22, // k=7
-    24  // k=8
+    // Mode 0: popcount < 8 (mostly single-bit flips)
+    {
+        0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
+        0x80, 0x03, 0x05, 0x09, 0x0A, 0x0C, 0x30, 0xC0
+    },
+
+    // Mode 1: popcount 8–16 (double/triple-bit flips)
+    {
+        0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x07,
+        0x0E, 0x1C, 0x38, 0x70, 0xE0, 0x17, 0x2B, 0x55
+    },
+
+    // Mode 2: larger 2–3 bit flips (higher XOR differences)
+    {
+        0x0B, 0x1B, 0x2D, 0x35, 0x5A, 0x6C, 0xC9, 0xD3,
+        0xE5, 0xB6, 0x7B, 0xDB, 0xED, 0xF7, 0xFF, 0xAA
+    }
 };
 
-//----------------------------------------------------------------------------------------------------------------------
-static inline uint32_t comb_nCk(uint32_t n, uint32_t k)
+//--------------------------------------------------------------------
+uint8_t find_mode_for_difference(uint32_t diff, uint8_t out_indices[4])
 {
-    if (k > n) return 0;
-    if (k == 0 || k == n) return 1;
-    if (k > n - k) k = n - k;
+    uint8_t bytes[4];
+    for (uint32_t i = 0; i < 4; i++)
+        bytes[i] = (diff >> (i*8)) & 0xFF;
 
-    uint64_t result = 1;
-    for (uint32_t i = 1; i <= k; ++i)
+    for (uint8_t mode = 0; mode < 3; mode++)
     {
-        // Perform multiplication in 64-bit to avoid overflow before division
-        result = result * (n - (k - i)) / i;
-    }
-
-    return (uint32_t)result;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static uint32_t comb_rank_encode(uint32_t mask, uint32_t k)
-{
-    uint32_t rank = 0;
-    uint32_t remaining = k;
-
-    for (int bit = 31; bit >= 0; --bit)
-    {
-        if (mask & (1u << bit))
+        bool all_found = true;
+        for (uint32_t i = 0; i < 4; i++)
         {
-            rank += comb_nCk(bit, remaining);
-            remaining--;
-            if (remaining == 0)
+            bool found = false;
+            for (uint32_t j = 0; j < 16; j++)
+            {
+                if (bytes[i] == bitfield_tables[mode][j])
+                {
+                    out_indices[i] = j;  // save the table index for this byte
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                all_found = false;
                 break;
+            }
         }
+        if (all_found)
+            return mode;
     }
-    return rank;
+
+    return 3;
 }
-
-//----------------------------------------------------------------------------------------------------------------------
-static uint32_t comb_rank_decode(uint32_t rank, uint32_t k)
-{
-    uint32_t mask = 0;
-    uint32_t remaining = k;
-
-    for (int bit = 31; bit >= 0; --bit)
-    {
-        if (remaining == 0) break;
-
-        uint32_t c = comb_nCk(bit, remaining);
-        if (rank >= c)
-        {
-            rank -= c;
-            mask |= (1u << bit);
-            remaining--;
-        }
-    }
-    return mask;
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-// bits needed to store rank of a 32-bit bitfield with k bits set
-static const uint8_t bits_for_k[33] = 
-{
-    0,  // k=0
-    5,  // k=1
-    9,  // k=2
-    13, // k=3
-    16, // k=4
-    18, // k=5
-    20, // k=6
-    22, // k=7
-    24, // k=8
-    25, // k=9
-    27, // k=10
-    28, // k=11
-    29, // k=12
-    30, // k=13
-    31, // k=14
-    31, // k=15
-    32, // k=16
-    32, // k=17
-    31, // k=18
-    31, // k=19
-    30, // k=20
-    29, // k=21
-    28, // k=22
-    27, // k=23
-    25, // k=24
-    24, // k=25
-    22, // k=26
-    20, // k=27
-    18, // k=28
-    16, // k=29
-    13, // k=30
-    9,  // k=31
-    5   // k=32
-};
 
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -790,26 +737,37 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
                 bs_write_u8(bs, dred[0] << 6 | dred[1] << 4 | dblue[0] << 2 | dblue[1]);
             }
 
-            // for indices, we store the reference to "nearest" indices (can be exactly the same)
-            // and the delta with this reference
-            uint32_t search_result = nearest32(top_table, top_table_size, current->indices);
-            uint32_t reference_index =  search_result & 0x3f;
-            uint32_t score = (search_result >> 16) & 0xffff;
+            uint32_t best_reference_index = 0;
+            uint32_t best_mode = 3;
+            uint8_t best_indices[4] = {0};
 
-            uint32_t difference = current->indices ^ top_table[reference_index];
-            uint32_t k = popcount(difference);
-
-            uint32_t rank = comb_rank_encode(difference, k);
-            uint32_t num_bits = bits_for_k[k];
-            uint32_t bit_index = 2;
-
-            bs_write_u8(bs, reference_index);
-            bs_write_u8(bs, ((rank&0x3) << 6) | (k&0x3f));
-
-            while (bit_index < num_bits)
+            // Brute force the top_table to find ANY reference that allows Mode 0, 1, or 2
+            for (uint32_t i = 0; i < top_table_size; ++i)
             {
-                bs_write_u8(bs, (rank >> bit_index) & 0xff);
-                bit_index += 8;
+                uint8_t temp_indices[4];
+                uint32_t diff = current->indices ^ top_table[i];
+                uint8_t mode = find_mode_for_difference(diff, temp_indices);
+
+                if (mode < 3) 
+                {
+                    best_mode = mode;
+                    best_reference_index = i;
+                    memcpy(best_indices, temp_indices, 4);
+                    break; // Found a 24-bit match! Stop searching.
+                }
+            }
+
+            bs_write_u8(bs, (best_mode << 6) | (best_reference_index&0x3f));
+
+            if (best_mode == 3)
+            {
+                for(uint32_t j=0; j<4; ++j)
+                    bs_write_u8(bs, (current->indices >> (j*8)) & 0xff);
+            }
+            else
+            {
+                bs_write_u8(bs, (best_indices[0] << 4) | best_indices[1]);
+                bs_write_u8(bs, (best_indices[2] << 4) | best_indices[3]);
             }
 
             previous = *current;
@@ -889,24 +847,30 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
                 }
             }
 
-            uint8_t reference_index = bs_read_u8(bs);
+            uint32_t mode_index = bs_read_u8(bs);
+            uint32_t mode = mode_index>>6;
+            uint32_t reference_index = mode_index & 0x3f;
 
-            uint32_t first_byte = bs_read_u8(bs);
-            uint32_t rank = first_byte>>6;
-            uint32_t k = first_byte & 0x3f;
-
-            uint32_t num_bits = bits_for_k[k];
-            uint32_t bit_index = 2;
-
-            while (bit_index < num_bits)
+            if (mode == 3)
             {
-                rank |= bs_read_u8(bs) << bit_index;
-                bit_index += 8; 
+                current->indices = 0;
+                for(uint32_t j=0; j<4; ++j)
+                    current->indices |= ((uint32_t)bs_read_u8(bs)) << (j*8);
             }
+            else
+            {
+                uint32_t difference = 0;
 
-            uint32_t difference = comb_rank_decode(rank, k);
+                uint8_t data = bs_read_u8(bs);
+                difference |= bitfield_tables[mode][data>>4] << 0;
+                difference |= bitfield_tables[mode][data&0xf] << 8;
 
-            current->indices = top_table[reference_index] ^ difference;
+                data = bs_read_u8(bs);
+                difference |= bitfield_tables[mode][data>>4] << 16;
+                difference |= bitfield_tables[mode][data&0xf] << 24;
+
+                current->indices = top_table[reference_index] ^ difference;
+            }
 
             previous = *current;
         }
