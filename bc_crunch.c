@@ -1121,9 +1121,10 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
             }
             else
             {
-                // store the entry in the dictionary
-                memmove(&dictionary[1], &dictionary[0], (DICTIONARY_SIZE - 1) * sizeof(uint64_t));
-                dictionary[0] = bitfield;
+                // store the entry in the middle of dictionary
+                uint32_t middle = DICTIONARY_SIZE/2;
+                memmove(&dictionary[middle+1], &dictionary[middle], (DICTIONARY_SIZE - middle - 1) * sizeof(uint64_t));
+                dictionary[middle] = bitfield;
 
                 // write the indices with local difference delta encoded
                 enc_put(codec, &use_dict, 0);
@@ -1240,9 +1241,10 @@ void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* out
                     block_previous = data;
                 }
 
-                // store the entry in the dictionary
-                memmove(&dictionary[1], &dictionary[0], (DICTIONARY_SIZE - 1) * sizeof(uint64_t));
-                dictionary[0] = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
+                // store the entry in the middle of dictionary
+                uint32_t middle = DICTIONARY_SIZE/2;
+                memmove(&dictionary[middle+1], &dictionary[middle], (DICTIONARY_SIZE - middle - 1) * sizeof(uint64_t));
+                dictionary[middle] = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
             }
             previous = *current;
         }
@@ -1271,6 +1273,7 @@ removed zig-zag, use left+up-up_left : 1.324589
 removed circular dictionnary 1.327702
 fixed x=0 block: 1.327747
 score < 4 : 1.336385
+middle insertion : 1.342262
 */
 
 
