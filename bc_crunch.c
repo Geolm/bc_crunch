@@ -1102,7 +1102,7 @@ void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, si
             uint16_t found_index = dict_lookup&0xffff;
             
             // found or similar? just write the dictionary index
-            if (score < 4)
+            if (score < 5 && ((y*width_blocks) + x > 32))
             {
                 enc_put(codec, &use_dict, 1);
                 enc_put(codec, &dict_reference, found_index);
@@ -1278,6 +1278,9 @@ score < 4 : 1.336385
 middle insertion : 1.342262
 quarter promotion : 1.342780
 half promotion : 1.34352
+1.345361
+warm the dictionary : 1.345404
+32 blocks grace period : 1.345416
 */
 
 

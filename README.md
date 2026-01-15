@@ -51,7 +51,7 @@ zlib (best compression) ratio: 1.436144
 
 ### BC4 benchmarks
 
-bc_crunch average compression ratio: **1.336385**  
+bc_crunch average compression ratio: **1.345416**  
 zlib (best compression) ratio: 1.104125
 
 | Category | Samples | Average bc_crunch Ratio | Average zlib Ratio |
