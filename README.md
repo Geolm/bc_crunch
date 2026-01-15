@@ -67,15 +67,14 @@ zlib (best compression) ratio: 1.104125
 
 ### BC5 benchmarks
 
-Average compression ratio : 1.198832
+Average compression ratio : **1.200537**
 
 | Texture | Width | Height | BC5 Size (bytes) | Crunched Size (bytes) | Compression Ratio |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| grey\_roof\_tiles\_02\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 831,233 | 1.261 |
-| patterned\_cobblestone\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 915,387 | 1.146 |
-| red\_brick\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 877,993 | 1.194 |
-| rough\_wood\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 914,356 | 1.147 |
-| **Average** | - | - | - | - | **1.187** |
+| grey\_roof\_tiles\_02\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 831,233 | 1.288 |
+| patterned\_cobblestone\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 915,387 | 1.157 |
+| red\_brick\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 877,993 | 1.207 |
+| rough\_wood\_nor\_dx\_1k.png | 1024 | 1024 | 1,048,576 | 914,356 | 1.148 |
 
 
 [BC5 textures samples](./textures/bc5/)
