@@ -75,7 +75,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
-#define TABLE_SIZE (63)
+#define TABLE_SIZE (128)
 #define COLOR_DELTA_NUM_BITS (7)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
@@ -121,12 +121,29 @@ static inline uint32_t bs_remaining(const bytestream* bs)
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+static inline uint32_t bs_offset(const bytestream* bs)
+{
+    return (uint32_t)(bs->ptr - bs->base);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 static inline void bs_write_u8(bytestream* bs, uint8_t v)
 {
     if (bs->ptr >= bs->end)
         return;
 
     *bs->ptr++ = v;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+static inline void bs_write_buffer(bytestream* bs, const bytestream* other)
+{
+    uint32_t offset = bs_offset(other);
+    if (bs->ptr + offset >= bs->end)
+        return;
+
+    memcpy(bs->ptr, other->base, offset);
+    bs->ptr += offset;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -139,10 +156,12 @@ static inline uint8_t bs_read_u8(bytestream* bs)
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-static inline uint32_t bs_offset(const bytestream* bs)
+static inline void bs_rewind(bytestream* bs)
 {
-    return (uint32_t)(bs->ptr - bs->base);
+    bs->ptr = bs->base;
 }
+
+
 
 // Maps signed:  0, -1,  1, -2,  2
 // To unsigned:  0,  1,  2,  3,  4
@@ -587,64 +606,6 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t dat
 //     return &indices[16];
 // }
 
-//----------------------------------------------------------------------------------------------------------------------
-static const uint8_t bitfield_tables[3][16] = 
-{
-    // Mode 0: popcount < 8 (mostly single-bit flips)
-    {
-        0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
-        0x80, 0x03, 0x05, 0x09, 0x0A, 0x0C, 0x30, 0xC0
-    },
-
-    // Mode 1: popcount 8–16 (double/triple-bit flips)
-    {
-        0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x07,
-        0x0E, 0x1C, 0x38, 0x70, 0xE0, 0x17, 0x2B, 0x55
-    },
-
-    // Mode 2: larger 2–3 bit flips (higher XOR differences)
-    {
-        0x0B, 0x1B, 0x2D, 0x35, 0x5A, 0x6C, 0xC9, 0xD3,
-        0xE5, 0xB6, 0x7B, 0xDB, 0xED, 0xF7, 0xFF, 0xAA
-    }
-};
-
-//--------------------------------------------------------------------
-uint8_t find_mode_for_difference(uint32_t diff, uint8_t out_indices[4])
-{
-    uint8_t bytes[4];
-    for (uint32_t i = 0; i < 4; i++)
-        bytes[i] = (diff >> (i*8)) & 0xFF;
-
-    for (uint8_t mode = 0; mode < 3; mode++)
-    {
-        bool all_found = true;
-        for (uint32_t i = 0; i < 4; i++)
-        {
-            bool found = false;
-            for (uint32_t j = 0; j < 16; j++)
-            {
-                if (bytes[i] == bitfield_tables[mode][j])
-                {
-                    out_indices[i] = j;  // save the table index for this byte
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-            {
-                all_found = false;
-                break;
-            }
-        }
-        if (all_found)
-            return mode;
-    }
-
-    return 3;
-}
-
-
 //----------------------------------------------------------------------------------------------------------------------------
 void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
@@ -668,7 +629,13 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
 
     bc1_block previous = {0};
 
-    uint32_t color_escape_count = 0;
+    uint32_t block_index = 0;
+    uint8_t block_buffer[128];
+    bytestream block_stream;
+    uint8_t block_indices_raw = 0;
+    uint8_t diff_table[32] = {};
+
+    bs_init(&block_stream, block_buffer, sizeof(block_buffer));
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
@@ -723,56 +690,87 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
             if (color_byte0 == 0xff || needs_escape)
             {
                 // escape case, paying the full price + one byte :(
-                bs_write_u8(bs, 0xff);
-                bs_write_u8(bs, (current->color[0] >> 8) & 0xff);
-                bs_write_u8(bs, current->color[0] & 0xff);
-                bs_write_u8(bs, (current->color[1] >> 8) & 0xff);
-                bs_write_u8(bs, current->color[1] & 0xff);
-
-                color_escape_count++;
+                bs_write_u8(&block_stream, 0xff);
+                bs_write_u8(&block_stream, (current->color[0] >> 8) & 0xff);
+                bs_write_u8(&block_stream, current->color[0] & 0xff);
+                bs_write_u8(&block_stream, (current->color[1] >> 8) & 0xff);
+                bs_write_u8(&block_stream, current->color[1] & 0xff);
             }
             else
             {
-                bs_write_u8(bs, color_byte0);
-                bs_write_u8(bs, dred[0] << 6 | dred[1] << 4 | dblue[0] << 2 | dblue[1]);
+                bs_write_u8(&block_stream, color_byte0);
+                bs_write_u8(&block_stream, dred[0] << 6 | dred[1] << 4 | dblue[0] << 2 | dblue[1]);
             }
 
-            uint32_t best_reference_index = 0;
-            uint32_t best_mode = 3;
-            uint8_t best_indices[4] = {0};
+            uint32_t reference = previous.indices;
+            uint32_t difference = current->indices ^ reference;
+            uint32_t diff_indices[4];
 
-            // Brute force the top_table to find ANY reference that allows Mode 0, 1, or 2
-            for (uint32_t i = 0; i < top_table_size; ++i)
+            // try to encode the diff with the difftable
+            for(uint32_t j=0; j<4; ++j)
             {
-                uint8_t temp_indices[4];
-                uint32_t diff = current->indices ^ top_table[i];
-                uint8_t mode = find_mode_for_difference(diff, temp_indices);
+                uint8_t value = (difference>>(j*8)) & 0xff;
+                diff_indices[j] = UINT32_MAX;
 
-                if (mode < 3) 
+                for(uint32_t i=0; i<16 && (diff_indices[j] == UINT32_MAX); ++i)
+                    if (value == diff_table[i])
+                        diff_indices[j] = i;
+            }
+
+            bool raw_indices = (diff_indices[0] > 15) || (diff_indices[1] > 15) || 
+                               (diff_indices[2] > 15) || (diff_indices[3] > 15);
+
+            block_indices_raw |= (raw_indices ? 1 : 0) << block_index;
+
+            if (raw_indices)
+            {
+                for(uint32_t j=0; j<4; ++j)
+                    bs_write_u8(&block_stream, (current->indices >> (j*8)) & 0xff);
+            }
+            else
+            {
+                bs_write_u8(&block_stream, (diff_indices[0] << 4) | diff_indices[1]);
+                bs_write_u8(&block_stream, (diff_indices[2] << 4) | diff_indices[3]);
+            }
+
+            // update the diff_table
+            for(uint32_t j=0; j<4; ++j)
+            {
+                uint8_t value = (difference>>(j*8)) & 0xff;
+                diff_indices[j] = UINT32_MAX;
+
+                for(uint32_t i=0; i<16 && (diff_indices[j] == UINT32_MAX); ++i)
+                    if (value == diff_table[i])
+                        diff_indices[j] = i;
+
+                if (diff_indices[j] == UINT32_MAX)
                 {
-                    best_mode = mode;
-                    best_reference_index = i;
-                    memcpy(best_indices, temp_indices, 4);
-                    break; // Found a 24-bit match! Stop searching.
+                    memmove(&diff_table[17], &diff_table[16], 15);
+                    diff_table[16] = value;
+                }
+                else if (diff_indices[j]>1)
+                {
+                    uint32_t target = diff_indices[j]/2;
+                    memmove(&diff_table[target+1], &diff_table[target], (diff_indices[j] - target) * sizeof(uint8_t));
+                    diff_table[target] = value;
                 }
             }
 
-            bs_write_u8(bs, (best_mode << 6) | (best_reference_index&0x3f));
-
-            if (best_mode == 3)
+            // flush 8 blocks
+            if (++block_index==8)
             {
-                for(uint32_t j=0; j<4; ++j)
-                    bs_write_u8(bs, (current->indices >> (j*8)) & 0xff);
-            }
-            else
-            {
-                bs_write_u8(bs, (best_indices[0] << 4) | best_indices[1]);
-                bs_write_u8(bs, (best_indices[2] << 4) | best_indices[3]);
+                bs_write_u8(bs, block_indices_raw);
+                bs_write_buffer(bs, &block_stream);
+                bs_rewind(&block_stream);
+                block_index = 0;
+                block_indices_raw = 0;
             }
 
             previous = *current;
         }
     }
+
+    bs_write_buffer(bs, &block_stream);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -795,10 +793,17 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
 
     bc1_block previous = {0};
 
+    uint32_t block_index = 0;
+    uint8_t block_indices_raw = 0;
+    uint8_t diff_table[32] = {};
+
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
+            if (block_index == 0)
+                block_indices_raw = bs_read_u8(bs);
+
             // zig-zag pattern color
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
             bc1_block* current = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y);
@@ -847,29 +852,60 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
                 }
             }
 
-            uint32_t mode_index = bs_read_u8(bs);
-            uint32_t mode = mode_index>>6;
-            uint32_t reference_index = mode_index & 0x3f;
+            uint32_t difference = 0; 
+            uint32_t diff_indices[4];
 
-            if (mode == 3)
+            if (block_indices_raw & (1<<block_index))
             {
                 current->indices = 0;
                 for(uint32_t j=0; j<4; ++j)
                     current->indices |= ((uint32_t)bs_read_u8(bs)) << (j*8);
+
+                difference = previous.indices ^ current->indices;
             }
             else
             {
-                uint32_t difference = 0;
-
                 uint8_t data = bs_read_u8(bs);
-                difference |= bitfield_tables[mode][data>>4] << 0;
-                difference |= bitfield_tables[mode][data&0xf] << 8;
+                diff_indices[0] = data >> 4;
+                diff_indices[1] = data & 0xf;
 
                 data = bs_read_u8(bs);
-                difference |= bitfield_tables[mode][data>>4] << 16;
-                difference |= bitfield_tables[mode][data&0xf] << 24;
+                diff_indices[2] = data >> 4;
+                diff_indices[3] = data & 0xf;
 
-                current->indices = top_table[reference_index] ^ difference;
+                for(uint32_t j=0; j<4; ++j)
+                    difference |= diff_table[diff_indices[j]] << (j*8);
+
+                current->indices = previous.indices ^ difference;
+            }
+
+            // update the diff_table
+            for(uint32_t j=0; j<4; ++j)
+            {
+                uint8_t value = (difference>>(j*8)) & 0xff;
+                diff_indices[j] = UINT32_MAX;
+
+                for(uint32_t i=0; i<16 && (diff_indices[j] == UINT32_MAX); ++i)
+                    if (value == diff_table[i])
+                        diff_indices[j] = i;
+
+                if (diff_indices[j] == UINT32_MAX)
+                {
+                    memmove(&diff_table[17], &diff_table[16], 15);
+                    diff_table[16] = value;
+                }
+                else if (diff_indices[j]>1)
+                {
+                    uint32_t target = diff_indices[j]/2;
+                    memmove(&diff_table[target+1], &diff_table[target], (diff_indices[j] - target) * sizeof(uint8_t));
+                    diff_table[target] = value;
+                }
+            }
+
+            if (++block_index == 8)
+            {
+                block_index = 0;
+                block_indices_raw = 0;
             }
 
             previous = *current;
