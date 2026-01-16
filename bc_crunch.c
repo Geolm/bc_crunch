@@ -75,12 +75,13 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define DM__LengthShift (15)
 #define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
-#define TABLE_SIZE (128)
+#define TABLE_SIZE (256)
 #define COLOR_DELTA_NUM_BITS (7)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
 #define BC4_COLOR_NUM_BITS (8)
 #define BC4_INDEX_NUM_BITS (3)
+#define BC1_DIFFTABLE_SIZE (16)
 
 static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
 
@@ -633,7 +634,9 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
     uint8_t block_buffer[128];
     bytestream block_stream;
     uint8_t block_indices_raw = 0;
-    uint8_t diff_table[32] = {};
+    uint8_t diff_table[BC1_DIFFTABLE_SIZE] = {0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x03,0x05,0x09,0x0A,0x0C,0x30,0xC0};
+
+    uint32_t fail_to_compress = 0;
 
     bs_init(&block_stream, block_buffer, sizeof(block_buffer));
 
@@ -702,8 +705,8 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
                 bs_write_u8(&block_stream, dred[0] << 6 | dred[1] << 4 | dblue[0] << 2 | dblue[1]);
             }
 
-            uint32_t reference = previous.indices;
-            uint32_t difference = current->indices ^ reference;
+            uint32_t table_index = nearest32(top_table, top_table_size, current->indices) & 0xffff;
+            uint32_t difference = current->indices ^ top_table[table_index];
             uint32_t diff_indices[4];
 
             // try to encode the diff with the difftable
@@ -712,7 +715,7 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
                 uint8_t value = (difference>>(j*8)) & 0xff;
                 diff_indices[j] = UINT32_MAX;
 
-                for(uint32_t i=0; i<16 && (diff_indices[j] == UINT32_MAX); ++i)
+                for(uint32_t i=0; i<BC1_DIFFTABLE_SIZE && (diff_indices[j] == UINT32_MAX); ++i)
                     if (value == diff_table[i])
                         diff_indices[j] = i;
             }
@@ -724,36 +727,15 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
 
             if (raw_indices)
             {
+                fail_to_compress++;
                 for(uint32_t j=0; j<4; ++j)
                     bs_write_u8(&block_stream, (current->indices >> (j*8)) & 0xff);
             }
             else
             {
-                bs_write_u8(&block_stream, (diff_indices[0] << 4) | diff_indices[1]);
-                bs_write_u8(&block_stream, (diff_indices[2] << 4) | diff_indices[3]);
-            }
-
-            // update the diff_table
-            for(uint32_t j=0; j<4; ++j)
-            {
-                uint8_t value = (difference>>(j*8)) & 0xff;
-                diff_indices[j] = UINT32_MAX;
-
-                for(uint32_t i=0; i<16 && (diff_indices[j] == UINT32_MAX); ++i)
-                    if (value == diff_table[i])
-                        diff_indices[j] = i;
-
-                if (diff_indices[j] == UINT32_MAX)
-                {
-                    memmove(&diff_table[17], &diff_table[16], 15);
-                    diff_table[16] = value;
-                }
-                else if (diff_indices[j]>1)
-                {
-                    uint32_t target = diff_indices[j]/2;
-                    memmove(&diff_table[target+1], &diff_table[target], (diff_indices[j] - target) * sizeof(uint8_t));
-                    diff_table[target] = value;
-                }
+                bs_write_u8(&block_stream, table_index);
+                bs_write_u8(&block_stream, (diff_indices[0]<<4) | diff_indices[1]);
+                bs_write_u8(&block_stream, (diff_indices[2]<<4) | diff_indices[3]);
             }
 
             // flush 8 blocks
@@ -771,6 +753,9 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
     }
 
     bs_write_buffer(bs, &block_stream);
+
+    float num_blocks = height_blocks * width_blocks;
+    printf("fail_to_compress ratio : %f\n", (float) fail_to_compress / num_blocks);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -795,7 +780,7 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
 
     uint32_t block_index = 0;
     uint8_t block_indices_raw = 0;
-    uint8_t diff_table[32] = {};
+    uint8_t diff_table[BC1_DIFFTABLE_SIZE] = {0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x03,0x05,0x09,0x0A,0x0C,0x30,0xC0};
 
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
@@ -865,6 +850,8 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
             }
             else
             {
+                uint8_t table_index = bs_read_u8(bs);
+                
                 uint8_t data = bs_read_u8(bs);
                 diff_indices[0] = data >> 4;
                 diff_indices[1] = data & 0xf;
@@ -876,31 +863,32 @@ void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output,
                 for(uint32_t j=0; j<4; ++j)
                     difference |= diff_table[diff_indices[j]] << (j*8);
 
-                current->indices = previous.indices ^ difference;
+                current->indices = top_table[table_index] ^ difference;
             }
 
             // update the diff_table
-            for(uint32_t j=0; j<4; ++j)
-            {
-                uint8_t value = (difference>>(j*8)) & 0xff;
-                diff_indices[j] = UINT32_MAX;
+            // for(uint32_t j=0; j<4; ++j)
+            // {
+            //     uint8_t value = (difference>>(j*8)) & 0xff;
+            //     diff_indices[j] = UINT32_MAX;
 
-                for(uint32_t i=0; i<16 && (diff_indices[j] == UINT32_MAX); ++i)
-                    if (value == diff_table[i])
-                        diff_indices[j] = i;
+            //     for(uint32_t i=0; i<BC1_DIFFTABLE_SIZE && (diff_indices[j] == UINT32_MAX); ++i)
+            //         if (value == diff_table[i])
+            //             diff_indices[j] = i;
 
-                if (diff_indices[j] == UINT32_MAX)
-                {
-                    memmove(&diff_table[17], &diff_table[16], 15);
-                    diff_table[16] = value;
-                }
-                else if (diff_indices[j]>1)
-                {
-                    uint32_t target = diff_indices[j]/2;
-                    memmove(&diff_table[target+1], &diff_table[target], (diff_indices[j] - target) * sizeof(uint8_t));
-                    diff_table[target] = value;
-                }
-            }
+            //     if (diff_indices[j] == UINT32_MAX)
+            //     {
+            //         uint32_t target = BC1_DIFFTABLE_HOT / 2;
+            //         memmove(&diff_table[target+1], &diff_table[target], BC1_DIFFTABLE_SIZE - target - 1);
+            //         diff_table[target] = value;
+            //     }
+            //     else if (diff_indices[j]>1)
+            //     {
+            //         uint32_t target = diff_indices[j]/2;
+            //         memmove(&diff_table[target+1], &diff_table[target], (diff_indices[j] - target) * sizeof(uint8_t));
+            //         diff_table[target] = value;
+            //     }
+            // }
 
             if (++block_index == 8)
             {
