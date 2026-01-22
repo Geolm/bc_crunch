@@ -81,8 +81,6 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #define BC4_COLOR_NUM_BITS (8)
 #define BC4_INDEX_NUM_BITS (3)
 
-static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
-
 #if defined(_MSC_VER)
     #include <intrin.h>
     #pragma intrinsic(__popcnt)
@@ -94,6 +92,346 @@ static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 1
     #define popcount(x) __builtin_popcount(x)
 #endif
 
+
+//----------------------------------------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------------------------------------
+enum codec_mode
+{
+    mode_undefined = 0,
+    mode_encoder = 1,
+    mode_decoder
+};
+
+//----------------------------------------------------------------------------------------------------------------------------
+#define HF_MAX_SYMBOLS 256
+#define HF_TABLE_BITS  11
+#define HF_TABLE_SIZE  (1 << HF_TABLE_BITS)
+
+typedef struct hf_model 
+{
+    int32_t  decd_table[HF_TABLE_SIZE];
+    int32_t  tree[2][HF_MAX_SYMBOLS];
+    uint32_t length[HF_MAX_SYMBOLS];
+    uint32_t codeword[HF_MAX_SYMBOLS];
+    uint32_t symbol_count[HF_MAX_SYMBOLS];
+    uint32_t data_symbols;
+    uint32_t table_shift;
+    uint32_t table_bits;
+} hf_model;
+
+//----------------------------------------------------------------------------------------------------------------------------
+typedef struct hf_context
+{
+    uint8_t *code_buffer, *new_buffer, *bc_pointer;
+    uint32_t bit_buffer, bit_position;
+    size_t buffer_size;
+    enum codec_mode mode;
+} hf_context;
+
+//----------------------------------------------------------------------------------------------------------------------------
+static void form_huffman_tree(int32_t number_of_symbols, uint32_t original_count[], int32_t left_branch[], int32_t right_branch[])
+{
+    int32_t tc, ts, i, n, nc, it = 0, k = (number_of_symbols >> 1) + 1;
+    int32_t *count = right_branch - 1, *symbol = left_branch - 1;
+
+    for (n = k - 1; n < number_of_symbols; n++)
+    { // second half of the heap
+        symbol[n + 1] = n;
+        count[n + 1] = original_count[n];
+    }
+
+    for (;;)
+    {
+        if (k > 1)
+        {
+            ts = (--k) - 1; // add first half to heap
+            tc = original_count[ts];
+        }
+        else if ((++it) & 1)
+        {
+            tc = count[n];
+            ts = symbol[n];
+            left_branch[--n] = symbol[1]; // set-up merging nodes
+            if (n == 1)
+                break;
+            nc = count[1];
+        }
+        else
+        {
+            right_branch[n] = symbol[1]; // finalize merging nodes
+            ts = -n;
+            tc = nc + count[1];
+        }
+
+        for (int32_t j = (i = k) << 1; j <= n; j += (i = j))
+        { // heap sort
+            if ((j < n) && (count[j] > count[j + 1]))
+                ++j;
+            if (tc <= count[j])
+                break;
+            symbol[i] = symbol[j];
+            count[i] = count[j];
+        }
+        symbol[i] = ts;
+        count[i] = tc;
+    }
+    right_branch[1] = ts;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+static void set_huffman_code(int32_t table_bits, int32_t tree[2][HF_MAX_SYMBOLS], int32_t *decoder_table, uint32_t *codeword, uint32_t *codeword_length)
+{
+    int32_t stack[32], node, depth = 0, current_code = 0;
+
+    for (stack[0] = 1; depth >= 0;)
+    {
+        // transverse tree setting codewords
+        if ((node = tree[current_code & 1][stack[depth]]) < 0)
+        {
+            do
+            {
+                if (depth + 1 == table_bits)
+                    decoder_table[current_code] = node;
+                current_code <<= 1;
+                stack[++depth] = -node;
+            } while ((node = tree[0][-node]) < 0);
+        }
+
+        codeword[node] = current_code; // set codeword to leaf symbol
+        int32_t nb = codeword_length[node] = depth + 1;
+
+        if (nb <= table_bits)
+        {
+            // add entries to decoder table
+            if (nb == table_bits)
+                decoder_table[current_code] = node;
+            else
+            {
+                int32_t db = table_bits - nb, sc = current_code << db;
+                for (int32_t k = 1 << db; k;)
+                    decoder_table[sc + --k] = node;
+            }
+        }
+
+        while (current_code & 1)
+        { // backtrack
+            current_code >>= 1;
+            if (--depth < 0)
+                break;
+        }
+        current_code |= 1;
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_init(hf_context *c, void *user_buffer, size_t length_in_bytes)
+{
+    assert(user_buffer != NULL);
+
+    c->mode = mode_undefined;
+    c->buffer_size = length_in_bytes;
+    c->code_buffer = (uint8_t *)user_buffer;
+    c->new_buffer = 0;
+
+    return;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_start_encoder(hf_context *c)
+{
+    c->mode = mode_encoder;
+    c->bit_buffer = 0;
+    c->bit_position = 32;
+    c->bc_pointer = c->code_buffer;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+size_t hf_stop_encoder(hf_context *c)
+{
+    assert(c->mode == mode_encoder);
+
+    c->mode = mode_undefined;
+
+    if (c->bit_position < 32)
+        *c->bc_pointer++ = (uint8_t)(c->bit_buffer >> 24);
+
+    size_t code_bytes = (size_t)(c->bc_pointer - c->code_buffer);
+    assert(code_bytes < c->buffer_size);
+
+    return code_bytes;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_start_decoder(hf_context *c)
+{
+    c->mode = mode_decoder;
+    c->bit_buffer = 0;
+    c->bit_position = 32;
+    c->bc_pointer = c->code_buffer;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_stop_decoder(hf_context *c)
+{
+    assert(c->mode == mode_decoder);
+    c->mode = mode_undefined;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_encode(hf_context *c, const hf_model *model, uint32_t data)
+{
+    assert(c->mode == mode_encoder);
+    assert(data < model->data_symbols);
+
+    c->bit_buffer |= model->codeword[data] << (c->bit_position -= model->length[data]);
+    if (c->bit_position <= 24)
+    {
+        do
+        {
+            *c->bc_pointer++ = (uint8_t)(c->bit_buffer >> 24);
+            c->bit_buffer <<= 8;
+        } while ((c->bit_position += 8) <= 24);
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+uint32_t hf_decode(hf_context *c, const hf_model *model)
+{
+    assert(c->mode == mode_decoder);
+
+    while (c->bit_position >= 8)
+        c->bit_buffer |= (uint32_t)(*c->bc_pointer++) << (c->bit_position -= 8);
+
+    int32_t data = model->decd_table[c->bit_buffer >> model->table_shift]; // table decoding
+
+    if (data >= 0)
+        c->bit_buffer <<= model->length[data];
+    else
+    {
+        c->bit_buffer <<= model->table_bits;
+        do
+        {
+            data = model->tree[c->bit_buffer >> 31][-data];
+            c->bit_buffer <<= 1;
+        } while (data < 0);
+    }
+
+    c->bit_position += model->length[data];
+
+    return data;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_put_bits(hf_context *c, uint32_t data, uint32_t number_of_bits)
+{
+    assert(c->mode == mode_encoder);
+    assert(number_of_bits > 1 && number_of_bits <= 24);
+    assert(data < (1 << number_of_bits));
+
+    // save data bits in most-significant bits of 32-bit word
+    c->bit_buffer |= data << (c->bit_position -= number_of_bits);
+
+    if (c->bit_position <= 24)
+    {
+        do
+        {
+            *c->bc_pointer++ = (uint8_t)(c->bit_buffer >> 24);
+            c->bit_buffer <<= 8;
+        } while ((c->bit_position += 8) <= 24);
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+uint32_t hf_get_bits(hf_context *c, uint32_t number_of_bits)
+{
+    assert(c->mode == mode_decoder);
+    assert(number_of_bits > 1 && number_of_bits <= 24);
+
+    while (c->bit_position >= 8)
+    {
+        c->bit_buffer |= (uint32_t)(*c->bc_pointer++) << (c->bit_position -= 8);
+    }
+
+    // next data bits are most-significant bits in 32-bit word
+    c->bit_position += number_of_bits;
+    uint32_t data = c->bit_buffer >> (32 - number_of_bits);
+    c->bit_buffer <<= number_of_bits;
+
+    return data;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_model_init(hf_model *model, uint32_t num_symbols)
+{
+    model->table_bits = HF_TABLE_BITS;
+    model->table_shift = 32 - model->table_bits;
+    model->data_symbols = num_symbols;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_model_set_distribution(hf_model *model, uint32_t num_symbols, float *probability)
+{
+    assert(num_symbols >= 3 && num_symbols <= UINT8_MAX + 1);
+
+    model->data_symbols = num_symbols;
+
+    for (uint32_t n = 0; n < model->data_symbols; n++)
+        model->symbol_count[n] = (uint32_t)(1.0f + 1e4f * probability[n]);
+
+    // construct optimal code
+    form_huffman_tree(model->data_symbols, model->symbol_count, model->tree[0], model->tree[1]);
+    set_huffman_code(model->table_bits, model->tree, model->decd_table, model->codeword, model->length);
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_save_model(hf_context *c, const hf_model *model)
+{
+    hf_put_bits(c, model->data_symbols - 1, 8);
+
+    uint32_t max_val = 0;
+    for (uint32_t i = 0; i < model->data_symbols; i++)
+    {
+        if (model->symbol_count[i] > max_val)
+            max_val = model->symbol_count[i];
+    }
+
+    uint32_t bits_needed = 0;
+    while ((1U << bits_needed) <= max_val && bits_needed < 32)
+        bits_needed++;
+    if (bits_needed == 0)
+        bits_needed = 1;
+
+    hf_put_bits(c, bits_needed, 6);
+
+    for (uint32_t i = 0; i < model->data_symbols; i++)
+        hf_put_bits(c, model->symbol_count[i], bits_needed);
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+void hf_load_model(hf_context *c, hf_model *model)
+{
+    uint32_t num_symbols = hf_get_bits(c, 8) + 1;
+    uint32_t bits_per_count = hf_get_bits(c, 6);
+
+    hf_model_init(model, num_symbols);
+
+    for (uint32_t i = 0; i < num_symbols; i++)
+        model->symbol_count[i] = hf_get_bits(c, bits_per_count);
+
+    form_huffman_tree(model->data_symbols, model->symbol_count, model->tree[0], model->tree[1]);
+    set_huffman_code(model->table_bits, model->tree, model->decd_table, model->codeword, model->length);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+#define HISTOGRAM_SIZE (256)
+
+typedef struct histogram
+{
+    uint32_t count[HISTOGRAM_SIZE];
+    float probability[HISTOGRAM_SIZE];
+    uint32_t num_symbols;
+} histogram;
+
 //----------------------------------------------------------------------------------------------------------------------
 typedef struct range_model
 {
@@ -103,9 +441,6 @@ typedef struct range_model
     uint32_t data_symbols, last_symbol, table_size, table_shift;
     uint32_t *decoder_table;
 } range_model;
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
 //----------------------------------------------------------------------------------------------------------------------
 void adaptive_model_update(range_model* model)
@@ -447,6 +782,8 @@ static inline uint8_t delta_decode_wrap(uint8_t prev, uint8_t delta_encoded)
     return prev + delta_encoded; // automatically wraps modulo 256
 }
 
+//----------------------------------------------------------------------------------------------------------------------
+static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline void bc1_extract_565(uint16_t color, uint8_t *r5, uint8_t *g6, uint8_t *b5)
@@ -821,6 +1158,8 @@ static inline range_model* bc4_select_model(const bc4_block* b, range_model* ind
 
     return &indices[16];
 }
+
+static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
 
 //----------------------------------------------------------------------------------------------------------------------------
 void bc1_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
