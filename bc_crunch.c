@@ -122,8 +122,10 @@ typedef struct hf_model
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct hf_context
 {
-    uint8_t *code_buffer, *new_buffer, *bc_pointer;
-    uint32_t bit_buffer, bit_position;
+    uint64_t bit_buffer;
+    int32_t bits_in_buffer;
+    uint8_t *bc_pointer;
+    uint8_t *code_buffer;
     size_t buffer_size;
     enum codec_mode mode;
 } hf_context;
@@ -250,6 +252,20 @@ static void set_huffman_code(int32_t table_bits, int32_t tree[2][HF_MAX_SYMBOLS]
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
+static inline void hf_refill(hf_context *c) 
+{
+    if (c->bits_in_buffer <= 32) 
+    {
+        // Read 4 bytes at once
+        uint32_t next = (uint32_t)c->bc_pointer[0] << 24 | (uint32_t)c->bc_pointer[1] << 16 |
+                        (uint32_t)c->bc_pointer[2] << 8  | (uint32_t)c->bc_pointer[3];
+        c->bit_buffer |= (uint64_t)next << (32 - c->bits_in_buffer);
+        c->bc_pointer += 4;
+        c->bits_in_buffer += 32;
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
 void hf_init(hf_context *c, void *user_buffer, size_t length_in_bytes)
 {
     assert(user_buffer != NULL);
@@ -257,9 +273,9 @@ void hf_init(hf_context *c, void *user_buffer, size_t length_in_bytes)
     c->mode = mode_undefined;
     c->buffer_size = length_in_bytes;
     c->code_buffer = (uint8_t *)user_buffer;
-    c->new_buffer = 0;
-
-    return;
+    c->bc_pointer = (uint8_t *)user_buffer;
+    c->bit_buffer = 0;
+    c->bits_in_buffer = 0;
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -267,7 +283,7 @@ void hf_start_encoder(hf_context *c)
 {
     c->mode = mode_encoder;
     c->bit_buffer = 0;
-    c->bit_position = 32;
+    c->bits_in_buffer = 0;
     c->bc_pointer = c->code_buffer;
 }
 
@@ -275,14 +291,17 @@ void hf_start_encoder(hf_context *c)
 size_t hf_stop_encoder(hf_context *c)
 {
     assert(c->mode == mode_encoder);
-
     c->mode = mode_undefined;
 
-    if (c->bit_position < 32)
-        *c->bc_pointer++ = (uint8_t)(c->bit_buffer >> 24);
+    while (c->bits_in_buffer > 0)
+    {
+        *c->bc_pointer++ = (uint8_t)(c->bit_buffer >> 56);
+        c->bit_buffer <<= 8;
+        c->bits_in_buffer -= 8;
+    }
 
     size_t code_bytes = (size_t)(c->bc_pointer - c->code_buffer);
-    assert(code_bytes < c->buffer_size);
+    assert(code_bytes <= c->buffer_size);
 
     return code_bytes;
 }
@@ -292,8 +311,12 @@ void hf_start_decoder(hf_context *c)
 {
     c->mode = mode_decoder;
     c->bit_buffer = 0;
-    c->bit_position = 32;
+    c->bits_in_buffer = 0;
     c->bc_pointer = c->code_buffer;
+    
+    // prime buffer
+    hf_refill(c);
+    hf_refill(c); 
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -304,84 +327,94 @@ void hf_stop_decoder(hf_context *c)
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void hf_encode(hf_context *c, const hf_model *model, uint32_t data)
+void hf_encode(hf_context *c, const hf_model *model, uint32_t data) 
 {
-    assert(c->mode == mode_encoder);
-    assert(data < model->data_symbols);
+    uint32_t code = model->codeword[data];
+    uint32_t len  = model->length[data];
 
-    c->bit_buffer |= model->codeword[data] << (c->bit_position -= model->length[data]);
-    if (c->bit_position <= 24)
+    
+    c->bit_buffer |= (uint64_t)code << (64 - c->bits_in_buffer - len);
+    c->bits_in_buffer += len;
+
+    // flush 32 bits at a time
+    if (c->bits_in_buffer >= 32) 
     {
-        do
-        {
-            *c->bc_pointer++ = (uint8_t)(c->bit_buffer >> 24);
-            c->bit_buffer <<= 8;
-        } while ((c->bit_position += 8) <= 24);
+        uint32_t out = (uint32_t)(c->bit_buffer >> 32);
+
+        c->bc_pointer[0] = (uint8_t)(out >> 24);
+        c->bc_pointer[1] = (uint8_t)(out >> 16);
+        c->bc_pointer[2] = (uint8_t)(out >> 8);
+        c->bc_pointer[3] = (uint8_t)(out);
+        c->bc_pointer += 4;
+        c->bit_buffer <<= 32;
+        c->bits_in_buffer -= 32;
     }
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-uint32_t hf_decode(hf_context *c, const hf_model *model)
+uint32_t hf_decode(hf_context *c, const hf_model *model) 
 {
-    assert(c->mode == mode_decoder);
+    hf_refill(c);
 
-    while (c->bit_position >= 8)
-        c->bit_buffer |= (uint32_t)(*c->bc_pointer++) << (c->bit_position -= 8);
+    uint32_t idx = (uint32_t)(c->bit_buffer >> (64 - HF_TABLE_BITS));
+    int32_t data = model->decd_table[idx];
 
-    int32_t data = model->decd_table[c->bit_buffer >> model->table_shift]; // table decoding
-
-    if (data >= 0)
-        c->bit_buffer <<= model->length[data];
-    else
+    if (data >= 0) 
     {
-        c->bit_buffer <<= model->table_bits;
-        do
+        uint32_t len = model->length[data];
+        c->bit_buffer <<= len;
+        c->bits_in_buffer -= len;
+    } 
+    else 
+    {
+        c->bit_buffer <<= HF_TABLE_BITS;
+        c->bits_in_buffer -= HF_TABLE_BITS;
+        do 
         {
-            data = model->tree[c->bit_buffer >> 31][-data];
+            data = model->tree[c->bit_buffer >> 63][-data];
             c->bit_buffer <<= 1;
+            c->bits_in_buffer--;
         } while (data < 0);
     }
-
-    c->bit_position += model->length[data];
-
-    return data;
+    return (uint32_t)data;
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void hf_put_bits(hf_context *c, uint32_t data, uint32_t number_of_bits)
+void hf_put_bits(hf_context *c, uint32_t data, uint32_t len)
 {
     assert(c->mode == mode_encoder);
-    assert(number_of_bits > 0 && number_of_bits <= 24);
-    assert(data < (1 << number_of_bits));
+    assert(len > 0 && len <= 32);
 
-    // save data bits in most-significant bits of 32-bit word
-    c->bit_buffer |= data << (c->bit_position -= number_of_bits);
+    c->bit_buffer |= (uint64_t)data << (64 - c->bits_in_buffer - len);
+    c->bits_in_buffer += len;
 
-    if (c->bit_position <= 24)
+    // Flush 32-bit chunks to memory
+    if (c->bits_in_buffer >= 32)
     {
-        do
-        {
-            *c->bc_pointer++ = (uint8_t)(c->bit_buffer >> 24);
-            c->bit_buffer <<= 8;
-        } while ((c->bit_position += 8) <= 24);
+        uint32_t out = (uint32_t)(c->bit_buffer >> 32);
+
+        c->bc_pointer[0] = (uint8_t)(out >> 24);
+        c->bc_pointer[1] = (uint8_t)(out >> 16);
+        c->bc_pointer[2] = (uint8_t)(out >>  8);
+        c->bc_pointer[3] = (uint8_t)(out);
+        c->bc_pointer += 4;
+        c->bit_buffer <<= 32;
+        c->bits_in_buffer -= 32;
     }
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-uint32_t hf_get_bits(hf_context *c, uint32_t number_of_bits)
+uint32_t hf_get_bits(hf_context *c, uint32_t len)
 {
     assert(c->mode == mode_decoder);
-    assert(number_of_bits > 0 && number_of_bits <= 24);
+    assert(len > 0 && len <= 32);
 
-    while (c->bit_position >= 8)
-    {
-        c->bit_buffer |= (uint32_t)(*c->bc_pointer++) << (c->bit_position -= 8);
-    }
+    if (c->bits_in_buffer < (int32_t)len) 
+        hf_refill(c); 
 
-    // next data bits are most-significant bits in 32-bit word
-    c->bit_position += number_of_bits;
-    uint32_t data = c->bit_buffer >> (32 - number_of_bits);
-    c->bit_buffer <<= number_of_bits;
+    uint32_t data = (uint32_t)(c->bit_buffer >> (64 - len));
+    c->bit_buffer <<= len;
+    c->bits_in_buffer -= len;
 
     return data;
 }
