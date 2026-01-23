@@ -2,9 +2,7 @@ name: compilation and unit tests
 
 on:
   push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
   
 jobs:
   build-ubuntu-clang:
