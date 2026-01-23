@@ -131,51 +131,77 @@ typedef struct hf_context
 //----------------------------------------------------------------------------------------------------------------------------
 static void form_huffman_tree(int32_t number_of_symbols, uint32_t original_count[], int32_t left_branch[], int32_t right_branch[])
 {
-    int32_t tc, ts, i, n, nc, it = 0, k = (number_of_symbols >> 1) + 1;
-    int32_t *count = right_branch - 1, *symbol = left_branch - 1;
+    uint32_t h_count[HF_MAX_SYMBOLS + 1];
+    int32_t h_sym[HF_MAX_SYMBOLS + 1];
+    int32_t h_size = 0;
 
-    for (n = k - 1; n < number_of_symbols; n++)
-    { // second half of the heap
-        symbol[n + 1] = n;
-        count[n + 1] = original_count[n];
-    }
-
-    for (;;)
+    for (int32_t i = 0; i < number_of_symbols; i++) 
     {
-        if (k > 1)
+        if (original_count[i] > 0) 
         {
-            ts = (--k) - 1; // add first half to heap
-            tc = original_count[ts];
+            h_size++;
+            int32_t c = h_size;
+            while (c > 1 && original_count[i] < h_count[c >> 1]) 
+            {
+                h_count[c] = h_count[c >> 1];
+                h_sym[c] = h_sym[c >> 1];
+                c >>= 1;
+            }
+            h_count[c] = original_count[i];
+            h_sym[c] = i; 
         }
-        else if ((++it) & 1)
+    }
+
+    if (h_size <= 1) 
+    {
+        // Force at least a root so the rest of the code doesn't crash
+        left_branch[1] = h_size ? h_sym[1] : 0;
+        right_branch[1] = h_size ? h_sym[1] : 0;
+        return;
+    }
+
+    int32_t next_internal = 2; 
+
+    while (h_size > 1) 
+    {
+        int32_t s[2]; uint32_t c[2];
+        for (int k = 0; k < 2; k++) 
         {
-            tc = count[n];
-            ts = symbol[n];
-            left_branch[--n] = symbol[1]; // set-up merging nodes
-            if (n == 1)
-                break;
-            nc = count[1];
-        }
-        else
-        {
-            right_branch[n] = symbol[1]; // finalize merging nodes
-            ts = -n;
-            tc = nc + count[1];
+            s[k] = h_sym[1]; c[k] = h_count[1];
+            uint32_t lc = h_count[h_size];
+            int32_t ls = h_sym[h_size--];
+            int32_t i = 1, j;
+            while ((j = i << 1) <= h_size) 
+            {
+                if (j < h_size && h_count[j+1] < h_count[j]) j++;
+                if (lc <= h_count[j]) break;
+                h_count[i] = h_count[j]; h_sym[i] = h_sym[j];
+                i = j;
+            }
+            h_count[i] = lc; h_sym[i] = ls;
         }
 
-        for (int32_t j = (i = k) << 1; j <= n; j += (i = j))
-        { // heap sort
-            if ((j < n) && (count[j] > count[j + 1]))
-                ++j;
-            if (tc <= count[j])
-                break;
-            symbol[i] = symbol[j];
-            count[i] = count[j];
+        // Determine where to save this internal node
+        // The very last merge MUST be stored at index 1 (the root)
+        int32_t node_idx = (h_size == 0) ? 1 : next_internal++;
+        
+        assert(node_idx < HF_MAX_SYMBOLS);
+
+        left_branch[node_idx] = s[0];
+        right_branch[node_idx] = s[1];
+
+        // Push internal node back to heap (negative value)
+        uint32_t nc = c[0] + c[1];
+        int32_t cur = ++h_size;
+        while (cur > 1 && nc < h_count[cur >> 1]) 
+        {
+            h_count[cur] = h_count[cur >> 1];
+            h_sym[cur] = h_sym[cur >> 1];
+            cur >>= 1;
         }
-        symbol[i] = ts;
-        count[i] = tc;
+        h_count[cur] = nc;
+        h_sym[cur] = -node_idx;
     }
-    right_branch[1] = ts;
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -185,7 +211,7 @@ static void set_huffman_code(int32_t table_bits, int32_t tree[2][HF_MAX_SYMBOLS]
 
     for (stack[0] = 1; depth >= 0;)
     {
-        // transverse tree setting codewords
+        // transverse tree setting codewordsx
         if ((node = tree[current_code & 1][stack[depth]]) < 0)
         {
             do
@@ -325,7 +351,7 @@ uint32_t hf_decode(hf_context *c, const hf_model *model)
 void hf_put_bits(hf_context *c, uint32_t data, uint32_t number_of_bits)
 {
     assert(c->mode == mode_encoder);
-    assert(number_of_bits > 1 && number_of_bits <= 24);
+    assert(number_of_bits > 0 && number_of_bits <= 24);
     assert(data < (1 << number_of_bits));
 
     // save data bits in most-significant bits of 32-bit word
@@ -345,7 +371,7 @@ void hf_put_bits(hf_context *c, uint32_t data, uint32_t number_of_bits)
 uint32_t hf_get_bits(hf_context *c, uint32_t number_of_bits)
 {
     assert(c->mode == mode_decoder);
-    assert(number_of_bits > 1 && number_of_bits <= 24);
+    assert(number_of_bits > 0 && number_of_bits <= 24);
 
     while (c->bit_position >= 8)
     {
@@ -371,8 +397,14 @@ void hf_model_init(hf_model *model, uint32_t num_symbols, uint32_t *symbol_count
 
     if (symbol_count != NULL)
     {
+        float oototal = 0.f;
         for (uint32_t n = 0; n < model->data_symbols; n++)
-            model->symbol_count[n] = symbol_count[n];
+            oototal += (float) symbol_count[n];
+
+        oototal = 1.f / oototal;
+
+        for (uint32_t n = 0; n < model->data_symbols; n++)
+            model->symbol_count[n] = (uint32_t)(1.0f + 1e4f * (float) symbol_count[n] * oototal);
 
         // construct optimal code
         form_huffman_tree(model->data_symbols, model->symbol_count, model->tree[0], model->tree[1]);
@@ -435,8 +467,6 @@ void histogram_init(histogram* h, uint32_t num_symbols)
     h->num_symbols = num_symbols;
     for(uint32_t i=0; i<num_symbols; ++i)
         h->count[i] = 0;
-
-    h->count[0] = h->count[1] = 1; // hack to always get two branches
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
