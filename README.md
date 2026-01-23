@@ -27,7 +27,7 @@ Compression
 - Throughput: **8.577236 MB/s**
 
 Decompression
-- Time: 0.353572 s
-- Throughput: **141.413896 MB/s**
+- Time: 0.348752 s
+- Throughput: **143.368234 MB/s**
 
 Decompression throughput is **four times (4x)** higher than the arithmetic encoding implementation (35MB/s).
