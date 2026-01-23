@@ -65,13 +65,6 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 // Private structures & functions
 //----------------------------------------------------------------------------------------------------------------------------
 
-#define RC__MinLength (0x01000000U)
-#define RC__MaxLength (0xFFFFFFFFU)
-#define DM_MAX_SYMBOLS (256)
-#define DM_MAX_TABLE_BITS 6
-#define DM_MAX_TABLE_SIZE (1 << DM_MAX_TABLE_BITS)
-#define DM__LengthShift (15)
-#define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
 #define TABLE_INDEX_NUM_BITS (8)
 #define TABLE_SIZE (1<<TABLE_INDEX_NUM_BITS)
