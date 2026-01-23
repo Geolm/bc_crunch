@@ -15,7 +15,7 @@ Despite the focus on fast decoding, the average compression ratio remains **bett
 
 ### Compression Ratio (BC1)
 
-- bc_crunch: **1.505671**
+- bc_crunch: **1.519476**
 - zlib: 1.436144
 
 ### Performance
