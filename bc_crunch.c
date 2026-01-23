@@ -430,14 +430,8 @@ void hf_model_init(hf_model *model, uint32_t num_symbols, uint32_t *symbol_count
 
     if (symbol_count != NULL)
     {
-        float oototal = 0.f;
         for (uint32_t n = 0; n < model->data_symbols; n++)
-            oototal += (float) symbol_count[n];
-
-        oototal = 1.f / oototal;
-
-        for (uint32_t n = 0; n < model->data_symbols; n++)
-            model->symbol_count[n] = (uint32_t)(1.0f + 1e4f * (float) symbol_count[n] * oototal);
+            model->symbol_count[n] = symbol_count[n];
 
         // construct optimal code
         form_huffman_tree(model->data_symbols, model->symbol_count, model->tree[0], model->tree[1]);
