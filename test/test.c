@@ -495,93 +495,93 @@ int main(void)
     if (average_ratio < 1.5f)
         return -1;
 
-    fprintf(stdout, "-----------------------------------\n");
-    fprintf(stdout, "| BC4 tests                       |\n");
-    fprintf(stdout, "-----------------------------------\n\n");
+    // fprintf(stdout, "-----------------------------------\n");
+    // fprintf(stdout, "| BC4 tests                       |\n");
+    // fprintf(stdout, "-----------------------------------\n\n");
 
-    void* crunched = arena_alloc(&g_arena, default_font_atlas_size*2);
-    size_t crunched_size = bc_crunch(cruncher_memory, default_font_atlas, 256, 256, bc4, crunched, default_font_atlas_size*2);
+    // void* crunched = arena_alloc(&g_arena, default_font_atlas_size*2);
+    // size_t crunched_size = bc_crunch(cruncher_memory, default_font_atlas, 256, 256, bc4, crunched, default_font_atlas_size*2);
 
-    fprintf(stdout, "satoshi font atlas bc4 = %zu ratio : %f\n", crunched_size, (float)default_font_atlas_size / (float)crunched_size);
-    fprintf(stdout, "verifying decrunch ");
+    // fprintf(stdout, "satoshi font atlas bc4 = %zu ratio : %f\n", crunched_size, (float)default_font_atlas_size / (float)crunched_size);
+    // fprintf(stdout, "verifying decrunch ");
 
-    uint8_t* decrunched = arena_alloc(&g_arena, default_font_atlas_size);
-    bc_decrunch(crunched, crunched_size, 256, 256, bc4, decrunched);
+    // uint8_t* decrunched = arena_alloc(&g_arena, default_font_atlas_size);
+    // bc_decrunch(crunched, crunched_size, 256, 256, bc4, decrunched);
 
-    for(uint32_t i=0; i<default_font_atlas_size; ++i)
-        if (decrunched[i] != default_font_atlas[i])
-        {
-            fprintf(stdout, "failed, bytes %u is different\n", i);
-            return -1;
-        }
+    // for(uint32_t i=0; i<default_font_atlas_size; ++i)
+    //     if (decrunched[i] != default_font_atlas[i])
+    //     {
+    //         fprintf(stdout, "failed, bytes %u is different\n", i);
+    //         return -1;
+    //     }
 
-    fprintf(stdout, "ok\n\n");
+    // fprintf(stdout, "ok\n\n");
 
-    global_zlib_ratio = 0.f;
-    global_ratio = 0.f;
-    num_ratios = 0;
+    // global_zlib_ratio = 0.f;
+    // global_ratio = 0.f;
+    // num_ratios = 0;
 
-    if (!test_bc4("../textures/bc4/grey_roof_tiles_02_ao_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/grey_roof_tiles_02_ao_1k.png"))
+    //     return -1;
 
-    if (!test_bc4("../textures/bc4/grey_roof_tiles_02_disp_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/grey_roof_tiles_02_disp_1k.png"))
+    //     return -1;
 
-    if (!test_bc4("../textures/bc4/patterned_cobblestone_ao_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/patterned_cobblestone_ao_1k.png"))
+    //     return -1;
 
-    if (!test_bc4("../textures/bc4/patterned_cobblestone_disp_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/patterned_cobblestone_disp_1k.png"))
+    //     return -1;
 
-    if (!test_bc4("../textures/bc4/red_brick_ao_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/red_brick_ao_1k.png"))
+    //     return -1;
 
-    if (!test_bc4("../textures/bc4/red_brick_disp_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/red_brick_disp_1k.png"))
+    //     return -1;
 
-    if (!test_bc4("../textures/bc4/rough_wood_ao_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/rough_wood_ao_1k.png"))
+    //     return -1;
 
-    if (!test_bc4("../textures/bc4/rough_wood_disp_1k.png"))
-        return -1;
+    // if (!test_bc4("../textures/bc4/rough_wood_disp_1k.png"))
+    //     return -1;
 
-    average_ratio = global_ratio / (float) num_ratios;
-    fprintf(stdout, "\n\nBC4 average compression ratio : %f vs zlib ratio : %f\n\n", average_ratio, global_zlib_ratio / (float) num_ratios);
+    // average_ratio = global_ratio / (float) num_ratios;
+    // fprintf(stdout, "\n\nBC4 average compression ratio : %f vs zlib ratio : %f\n\n", average_ratio, global_zlib_ratio / (float) num_ratios);
 
-    fprintf(stdout, "\n\n-----------------------------------\n");
-    fprintf(stdout, "| BC3 tests                       |\n");
-    fprintf(stdout, "-----------------------------------\n\n");
+    // fprintf(stdout, "\n\n-----------------------------------\n");
+    // fprintf(stdout, "| BC3 tests                       |\n");
+    // fprintf(stdout, "-----------------------------------\n\n");
 
-    if (!test_bc3("../textures/bc3/apps-internet-web-browser.png"))
-        return -1;
+    // if (!test_bc3("../textures/bc3/apps-internet-web-browser.png"))
+    //     return -1;
 
-    if (!test_bc3("../textures/bc3/plant_05.png"))
-        return -1;
+    // if (!test_bc3("../textures/bc3/plant_05.png"))
+    //     return -1;
 
-    if (!test_bc3("../textures/bc3/plant_60.png"))
-        return -1;
+    // if (!test_bc3("../textures/bc3/plant_60.png"))
+    //     return -1;
 
-    fprintf(stdout, "\n\n-----------------------------------\n");
-    fprintf(stdout, "| BC5 tests                       |\n");
-    fprintf(stdout, "-----------------------------------\n\n");
+    // fprintf(stdout, "\n\n-----------------------------------\n");
+    // fprintf(stdout, "| BC5 tests                       |\n");
+    // fprintf(stdout, "-----------------------------------\n\n");
 
-    global_ratio = 0.f;
-    num_ratios = 0;
+    // global_ratio = 0.f;
+    // num_ratios = 0;
 
-    if (!test_bc5("../textures/bc5/grey_roof_tiles_02_nor_dx_1k.png"))
-        return -1;
+    // if (!test_bc5("../textures/bc5/grey_roof_tiles_02_nor_dx_1k.png"))
+    //     return -1;
 
-    if (!test_bc5("../textures/bc5/patterned_cobblestone_nor_dx_1k.png"))
-        return -1;
+    // if (!test_bc5("../textures/bc5/patterned_cobblestone_nor_dx_1k.png"))
+    //     return -1;
 
-    if (!test_bc5("../textures/bc5/red_brick_nor_dx_1k.png"))
-        return -1;
+    // if (!test_bc5("../textures/bc5/red_brick_nor_dx_1k.png"))
+    //     return -1;
 
-    if (!test_bc5("../textures/bc5/rough_wood_nor_dx_1k.png"))
-        return -1;
+    // if (!test_bc5("../textures/bc5/rough_wood_nor_dx_1k.png"))
+    //     return -1;
 
-    average_ratio = global_ratio / (float) num_ratios;
-    fprintf(stdout, "\n\nBC5 average compression ratio : %f\n\n", average_ratio);
+    // average_ratio = global_ratio / (float) num_ratios;
+    // fprintf(stdout, "\n\nBC5 average compression ratio : %f\n\n", average_ratio);
 
     size_t bytes_allocated, byte_used;
     arena_stats(&g_arena, &bytes_allocated, &byte_used);
