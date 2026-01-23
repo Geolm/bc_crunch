@@ -183,10 +183,7 @@ static void form_huffman_tree(int32_t number_of_symbols, uint32_t original_count
             h_count[i] = lc; h_sym[i] = ls;
         }
 
-        // Determine where to save this internal node
-        // The very last merge MUST be stored at index 1 (the root)
         int32_t node_idx = (h_size == 0) ? 1 : next_internal++;
-        
         assert(node_idx < HF_MAX_SYMBOLS);
 
         left_branch[node_idx] = s[0];
@@ -256,7 +253,6 @@ static inline void hf_refill(hf_context *c)
 {
     if (c->bits_in_buffer <= 32) 
     {
-        // Read 4 bytes at once
         uint32_t next = (uint32_t)c->bc_pointer[0] << 24 | (uint32_t)c->bc_pointer[1] << 16 |
                         (uint32_t)c->bc_pointer[2] << 8  | (uint32_t)c->bc_pointer[3];
         c->bit_buffer |= (uint64_t)next << (32 - c->bits_in_buffer);
@@ -340,7 +336,6 @@ void hf_encode(hf_context *c, const hf_model *model, uint32_t data)
     if (c->bits_in_buffer >= 32) 
     {
         uint32_t out = (uint32_t)(c->bit_buffer >> 32);
-
         c->bc_pointer[0] = (uint8_t)(out >> 24);
         c->bc_pointer[1] = (uint8_t)(out >> 16);
         c->bc_pointer[2] = (uint8_t)(out >> 8);
@@ -388,11 +383,10 @@ void hf_put_bits(hf_context *c, uint32_t data, uint32_t len)
     c->bit_buffer |= (uint64_t)data << (64 - c->bits_in_buffer - len);
     c->bits_in_buffer += len;
 
-    // Flush 32-bit chunks to memory
+    // flush 32-bit chunks to memory
     if (c->bits_in_buffer >= 32)
     {
         uint32_t out = (uint32_t)(c->bit_buffer >> 32);
-
         c->bc_pointer[0] = (uint8_t)(out >> 24);
         c->bc_pointer[1] = (uint8_t)(out >> 16);
         c->bc_pointer[2] = (uint8_t)(out >>  8);
@@ -454,6 +448,7 @@ void hf_save_model(hf_context *c, const hf_model *model)
     uint32_t bits_needed = 0;
     while ((1U << bits_needed) <= max_val && bits_needed < 32)
         bits_needed++;
+
     if (bits_needed == 0)
         bits_needed = 1;
 
@@ -951,10 +946,9 @@ void bc1_crunch(hf_context* codec, void* cruncher_memory, const void* input, siz
     // ----------
     // FIRST PASS
     // ----------
-    histogram hred, hgreen, hblue;
-    histogram_init(&hred, 1 << COLOR_DELTA_NUM_BITS);
+    histogram hgreen, hredblue;
+    histogram_init(&hredblue, 1 << COLOR_DELTA_NUM_BITS);
     histogram_init(&hgreen, 1 << COLOR_DELTA_NUM_BITS);
-    histogram_init(&hblue, 1 << COLOR_DELTA_NUM_BITS);
 
     histogram htable_index, hmask, htable_difference;
     histogram_init(&htable_index, 256);
@@ -1018,8 +1012,8 @@ void bc1_crunch(hf_context* codec, void* cruncher_memory, const void* input, siz
 
                 assert((dred + 64) < 256);
                 assert((dblue + 64) < 256);
-                hred.count[dred + 64]++;
-                hblue.count[dblue + 64]++;
+                hredblue.count[dred + 64]++;
+                hredblue.count[dblue + 64]++;
             }
 
             uint32_t reference = nearest32(top_table, top_table_size, current->indices) & 0xffff;
@@ -1045,14 +1039,12 @@ void bc1_crunch(hf_context* codec, void* cruncher_memory, const void* input, siz
         }
     }
 
-    hf_model red, green, blue;
-    hf_model_init(&red, hred.num_symbols, hred.count);
-    hf_model_init(&green, hred.num_symbols, hgreen.count);
-    hf_model_init(&blue, hred.num_symbols, hblue.count);
+    hf_model green, redblue;
+    hf_model_init(&redblue, hredblue.num_symbols, hredblue.count);
+    hf_model_init(&green, hgreen.num_symbols, hgreen.count);
 
-    hf_save_model(codec, &red);
+    hf_save_model(codec, &redblue);
     hf_save_model(codec, &green);
-    hf_save_model(codec, &blue);
 
     hf_model table_index, diff_mask, table_entry, table_difference;
     hf_model_init(&table_index, htable_index.num_symbols, htable_index.count);
@@ -1132,8 +1124,8 @@ void bc1_crunch(hf_context* codec, void* cruncher_memory, const void* input, siz
                 dred -= dgreen;
                 dblue -= dgreen;
 
-                hf_encode(codec, &red, (uint8_t) (dred + 64));
-                hf_encode(codec, &blue, (uint8_t) (dblue + 64));
+                hf_encode(codec, &redblue, (uint8_t) (dred + 64));
+                hf_encode(codec, &redblue, (uint8_t) (dblue + 64));
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
@@ -1170,10 +1162,9 @@ void bc1_decrunch(hf_context* codec, uint32_t width, uint32_t height, void* outp
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
 
-    hf_model red, green, blue;
-    hf_load_model(codec, &red);
+    hf_model green, redblue;
+    hf_load_model(codec, &redblue);
     hf_load_model(codec, &green);
-    hf_load_model(codec, &blue);
     
     hf_model table_index, diff_mask, table_entry, table_difference;
     hf_load_model(codec, &table_index);
@@ -1216,8 +1207,8 @@ void bc1_decrunch(hf_context* codec, uint32_t width, uint32_t height, void* outp
                 }
 
                 uint8_t delta_green = (uint8_t)hf_decode(codec, &green);
-                uint8_t delta_red = (uint8_t)hf_decode(codec, &red);
-                uint8_t delta_blue = (uint8_t)hf_decode(codec, &blue);
+                uint8_t delta_red = (uint8_t)hf_decode(codec, &redblue);
+                uint8_t delta_blue = (uint8_t)hf_decode(codec, &redblue);
 
                 // red and blue delta are based on green delta
                 int dgreen_orig = (int)delta_green - 64;
