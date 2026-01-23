@@ -6,7 +6,7 @@
 
 `bc_crunch` is a tiny, dependency-free C99 library for *lossless* compression of GPU-compressed texture blocks **BC1, BC4, BC3, and BC5**.
 
-- ~800 LOC total (single-file encoder/decoder, no build system tricks)
+- ~1000 LOC total (single-file encoder/decoder, no build system tricks)
 - No malloc, no external libs
 - Deterministic, bit-exact reconstruction, fully tested with bytes-for-bytes comparison
 - Focused on production textures: albedo, masks, normals, heightmaps, etc.
@@ -88,7 +88,9 @@ Current performance on an M1 Pro MacBook Pro:
 Crunch  100× 1024×1024 texture: 2.26 s  → **22.11 MB/s**  
 Decrunch 100× 1024×1024 texture: 1.38 s  → **36.02 MB/s**
 
-Using the macro BC_CRUNCH_USE_VECTOR_QUANTIZATION slows down the compression ~ 11.5 MB/s
+Using the macro BC_CRUNCH_USE_VECTOR_QUANTIZATION slows down the compression ~ 11.5 MB/s  
+
+If you're looking for a better decrunch speed (**140MB/s**) for a small ratio cost (still **1.50:1**) have a look at the (huffman branch](https://github.com/Geolm/bc_crunch/tree/huffman)
 
 [benchmark.c](./test/benchmark.c)
 
