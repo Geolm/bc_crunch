@@ -15,7 +15,7 @@ Despite the focus on fast decoding, the average compression ratio remains **bett
 
 ### Compression Ratio (BC1)
 
-- bc_crunch: **1.505671**
+- bc_crunch: **1.519476**
 - zlib: 1.436144
 
 ### Performance
@@ -27,7 +27,7 @@ Compression
 - Throughput: **8.577236 MB/s**
 
 Decompression
-- Time: 0.353572 s
-- Throughput: **141.413896 MB/s**
+- Time: 0.348752 s
+- Throughput: **143.368234 MB/s**
 
 Decompression throughput is **four times (4x)** higher than the arithmetic encoding implementation (35MB/s).
