@@ -24,6 +24,8 @@ Check out the technical [documentation](./doc.md) for more.
 
 Compression ratio naturally depends on the input content. Repetitive patterns, smooth gradients, and large uniform regions compress very well, while randomness or high-frequency noise significantly reduces efficiency (e.g., dirt textures are typically very noisy).
 
+If you're looking for a better decrunch speed (**144MB/s**) for a small ratio cost (still **1.52:1**) have a look at the [huffman branch](https://github.com/Geolm/bc_crunch/tree/huffman)
+
 ### BC1 benchmarks
 
 bc_crunch average compression ratio: **1.593820**  
@@ -89,8 +91,6 @@ Crunch  100× 1024×1024 texture: 2.26 s  → **22.11 MB/s**
 Decrunch 100× 1024×1024 texture: 1.38 s  → **36.02 MB/s**
 
 Using the macro BC_CRUNCH_USE_VECTOR_QUANTIZATION slows down the compression ~ 11.5 MB/s  
-
-If you're looking for a better decrunch speed (**140MB/s**) for a small ratio cost (still **1.50:1**) have a look at the [huffman branch](https://github.com/Geolm/bc_crunch/tree/huffman)
 
 [benchmark.c](./test/benchmark.c)
 
