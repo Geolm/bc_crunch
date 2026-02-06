@@ -113,9 +113,7 @@ typedef struct le_stream
 typedef struct le_model
 {
     uint8_t hot_values[LE_MODEL_MAX_HOT];
-    uint8_t cold_min;
-    uint8_t cold_max;
-    uint8_t cold_num_bits;
+    uint16_t decode_table[1<<10];
 
 #ifdef LE_STATS
     uint32_t num_hot_tier0;
@@ -130,16 +128,6 @@ typedef struct le_histogram
     uint32_t count[LE_HISTOGRAM_SIZE];
     uint32_t num_symbols;
 } le_histogram;
-
-
-// Dibit-delta encoding model, specialized in small delta, use a good predictor up-front to maximize compression
-//
-// Use dibit to encode delta. 
-//      (0, -1, 1)      use 2 bits
-//      (-2, +2, -3)    use 4 bits
-//      (+3, -4, +4)    use 6 bits
-//      (-5, +5, -6)    use 8 bits
-//      anything greater use 16 bits
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_refill(le_stream* s)
@@ -239,9 +227,7 @@ static inline void le_write_dibit(le_stream* s, uint8_t dibit)
     s->bit_reservoir |= ((uint64_t)(dibit & 0x03) << s->bits_available);
     s->bits_available += 2;
     if (s->bits_available >= 32)
-    {
         le_flush(s);
-    }
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -261,32 +247,14 @@ static inline void le_write_byte(le_stream* s, uint8_t value)
     s->bit_reservoir |= ((uint64_t)value << s->bits_available);
     s->bits_available += 8;
     if (s->bits_available >= 32)
-    {
         le_flush(s);
-    }
-}
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t le_read_dibit(le_stream* s)
-{
-    if (s->bits_available < 2)
-    {
-        le_refill(s);
-    }
-
-    uint8_t value = (uint8_t)(s->bit_reservoir & 0x03);
-    s->bit_reservoir >>= 2;
-    s->bits_available -= 2;
-    return value;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline uint8_t le_read_nibble(le_stream* s)
 {
     if (s->bits_available < 4)
-    {
         le_refill(s);
-    }
 
     uint8_t value = (uint8_t)(s->bit_reservoir & 0x0F);
     s->bit_reservoir >>= 4;
@@ -298,9 +266,7 @@ static inline uint8_t le_read_nibble(le_stream* s)
 static inline uint8_t le_read_byte(le_stream* s)
 {
     if (s->bits_available < 8)
-    {
         le_refill(s);
-    }
 
     uint8_t value = (uint8_t)(s->bit_reservoir & 0xFF);
     s->bit_reservoir >>= 8;
@@ -341,8 +307,6 @@ void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symb
     for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
         selected[i] = UINT32_MAX;
 
-    uint32_t hot_used = 0;
-
     for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
     {
         uint32_t max_count = 0;
@@ -375,46 +339,6 @@ void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symb
 
         model->hot_values[i] = (uint8_t)max_index;
         selected[i] = max_index;
-        hot_used++;
-    }
-
-    model->cold_min = UINT8_MAX;
-    model->cold_max = 0;
-    for(uint32_t s = 0; s < num_symbols; s++)
-    {
-        // skip hot symbols
-        bool is_hot = false;
-        for (uint32_t i = 0; i < hot_used; i++)
-        {
-            if (model->hot_values[i] == s)
-            {
-                is_hot = true;
-                break;
-            }
-        }
-
-        if (is_hot || histogram[s] == 0)
-            continue;
-
-        if (s < model->cold_min)
-            model->cold_min = (uint8_t)s;
-        if (s > model->cold_max)
-            model->cold_max = (uint8_t)s;
-    }
-
-    model->cold_num_bits = 0;
-    if (model->cold_max >= model->cold_min)
-    {
-        uint8_t range = model->cold_max - model->cold_min;
-
-        if (range >= 64)
-            model->cold_num_bits = 8;
-        else if (range >= 16)
-            model->cold_num_bits = 6;
-        else if (range >= 4)
-            model->cold_num_bits = 4;
-        else
-            model->cold_num_bits = 2;
     }
 }
 
@@ -470,36 +394,26 @@ static inline void le_encode(le_stream *s, le_model *model, uint8_t value)
 #endif
 }
 
-static const uint32_t consumption_lut[4] = { 2, 4, 4, 8 };
-static const uint32_t offset_lut[4]      = { 0, 4, 20, 0 };
-
 // ----------------------------------------------------------------------------------------------------------------------------
-uint8_t static inline le_decode(le_stream *s, le_model *model)
+static inline uint8_t le_decode(le_stream *restrict s, const le_model *restrict model) 
 {
-    if (s->bits_available < 16) le_refill(s);
+    if (s->bits_available < 16)
+        le_refill(s);
 
-    uint64_t res = s->bit_reservoir;
-    uint32_t ctrl = (uint32_t)(res & 0x03);
-    res >>= 2;
+    uint32_t entry = model->decode_table[s->bit_reservoir & 0x3FF];
+    uint32_t length = entry >> 8;
+    uint8_t  value  = (uint8_t)entry;
 
-    uint32_t extra_bits = consumption_lut[ctrl];
-    uint32_t payload = (uint32_t)(res & ((1 << extra_bits) - 1));
+    // 4. Consume the bits used
+    s->bit_reservoir >>= length;
+    s->bits_available -= length;
 
-    s->bit_reservoir = res >> extra_bits;
-    s->bits_available -= (2 + extra_bits);
-
-    uint8_t hot_val = model->hot_values[payload + offset_lut[ctrl]];
-    uint8_t raw_val = (uint8_t)payload;
-
-    return (ctrl == 3) ? raw_val : hot_val;
+    return value;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_model_save(le_stream *s, const le_model *model)
 {
-    le_write_nibble(s, model->cold_num_bits);
-    le_write_byte(s, model->cold_min);
-
     for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
         le_write_byte(s, model->hot_values[i]);
 }
@@ -507,12 +421,35 @@ static inline void le_model_save(le_stream *s, const le_model *model)
 // ----------------------------------------------------------------------------------------------------------------------------
 void le_model_load(le_stream *s, le_model *model)
 {
-    model->cold_num_bits = le_read_nibble(s);
-    model->cold_min = le_read_byte(s);
-    
-
     for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
         model->hot_values[i] = le_read_byte(s);
+
+    // now generate the decode table
+    for (uint32_t i = 0; i < 1024; i++)
+    {
+        uint32_t control = i & 0x03;
+
+        if (control == CONTROL_HOT_TIER0)
+        {
+            uint32_t index = (i >> 2) & 0x03;
+            model->decode_table[i] = (4<<8) | (model->hot_values[index]);
+        }
+        else if (control == CONTROL_HOT_TIER1)
+        {
+            uint32_t index = ((i >> 2) & 0xf) + 4;
+            model->decode_table[i] = (6<<8) | (model->hot_values[index]);
+        }
+        else if (control == CONTROL_HOT_TIER2)
+        {
+            uint32_t index = ((i >> 2) & 0xf) + 20;
+            model->decode_table[i] = (6<<8) | (model->hot_values[index]);
+        }
+        else
+        {
+            uint32_t value = (i >> 2) & 0xFF;
+            model->decode_table[i] = (10<<8) | value;
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -528,6 +465,14 @@ static inline int8_t zigzag8_decode(uint8_t v)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
+// Dibit-delta encoding model, specialized in small delta, use a good predictor up-front to maximize compression
+//
+// Use dibit to encode delta. 
+//      (0, -1, 1)      use 2 bits
+//      (-2, +2, -3)    use 4 bits
+//      (+3, -4, +4)    use 6 bits
+//      (-5, +5, -6)    use 8 bits
+//      anything greater use 16 bits
 static inline void le_encode_delta(le_stream *s, int8_t delta)
 {
     uint8_t zz = zigzag8_encode(delta);
