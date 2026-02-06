@@ -18,6 +18,7 @@ add_executable(test
     ./test/miniz.c
     ./test/test.c
     ./bc_crunch.c
+    ./lite_encoding.c
 )
 
 if(UNIX AND NOT APPLE)
@@ -28,6 +29,7 @@ endif()
 add_executable(benchmark
     ./test/benchmark.c
     ./bc_crunch.c
+    ./lite_encoding.c
 )
 
 if(UNIX AND NOT APPLE)

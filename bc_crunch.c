@@ -41,8 +41,8 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include <stdio.h>
+#include "lite_encoding.h"
 
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
     #include <arm_neon.h>
@@ -67,23 +67,14 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 // Private structures & functions
 //----------------------------------------------------------------------------------------------------------------------------
 
-#define RC__MinLength (0x01000000U)
-#define RC__MaxLength (0xFFFFFFFFU)
-#define DM_MAX_SYMBOLS (256)
-#define DM_MAX_TABLE_BITS 6
-#define DM_MAX_TABLE_SIZE (1 << DM_MAX_TABLE_BITS)
-#define DM__LengthShift (15)
-#define DM__MaxCount    (1 << DM__LengthShift)
 #define HASHMAP_SIZE (1 << 20)
-#define TABLE_SIZE (128)
+#define TABLE_INDEX_NUM_BITS (8)
+#define TABLE_SIZE (1<<TABLE_INDEX_NUM_BITS)
 #define COLOR_DELTA_NUM_BITS (7)
 #define DICTIONARY_SIZE (256)
 #define MAKE48(r0, r1, r2) ( (((uint64_t)(r0) << 32) | ((uint64_t)(r1) << 16) | (uint64_t)(r2)) & 0x0000FFFFFFFFFFFFULL )
 #define BC4_COLOR_NUM_BITS (8)
 #define BC4_INDEX_NUM_BITS (3)
-#define BC1_DIFFTABLE_SIZE (16)
-
-static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
 
 #if defined(_MSC_VER)
     #include <intrin.h>
@@ -95,89 +86,6 @@ static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 1
     #define popcount64(x) __builtin_popcountll(x)
     #define popcount(x) __builtin_popcount(x)
 #endif
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline int int_abs(int a) {return (a>=0) ? a : -a;}
-
-//----------------------------------------------------------------------------------------------------------------------
-typedef struct bytestream
-{
-    uint8_t* base;
-    uint8_t* ptr;
-    uint8_t* end;
-} bytestream;
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline void bs_init(bytestream* bs, void* buffer, size_t size)
-{
-    bs->base = (uint8_t*)buffer;
-    bs->ptr  = bs->base;
-    bs->end  = bs->base + size;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline uint32_t bs_remaining(const bytestream* bs)
-{
-    return (uint32_t)(bs->end - bs->ptr);
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline uint32_t bs_offset(const bytestream* bs)
-{
-    return (uint32_t)(bs->ptr - bs->base);
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline void bs_write_u8(bytestream* bs, uint8_t v)
-{
-    if (bs->ptr >= bs->end)
-        return;
-
-    *bs->ptr++ = v;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline void bs_write_buffer(bytestream* bs, const bytestream* other)
-{
-    uint32_t offset = bs_offset(other);
-    if (bs->ptr + offset >= bs->end)
-        return;
-
-    memcpy(bs->ptr, other->base, offset);
-    bs->ptr += offset;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline uint8_t bs_read_u8(bytestream* bs)
-{
-    if (bs->ptr >= bs->end)
-        return 0;
-
-    return *bs->ptr++;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
-static inline void bs_rewind(bytestream* bs)
-{
-    bs->ptr = bs->base;
-}
-
-
-
-// Maps signed:  0, -1,  1, -2,  2
-// To unsigned:  0,  1,  2,  3,  4
-static inline uint32_t zigzag_encode(int32_t n)
-{
-    return (uint32_t)((n << 1) ^ (n >> 31));
-}
-
-// Maps unsigned: 0,  1,  2,  3,  4
-// To signed:    0, -1,  1, -2,  2
-static inline int32_t zigzag_decode(uint32_t n)
-{
-    return (int32_t)((n >> 1) ^ (-(int32_t)(n & 1)));
-}
-
 
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct bc1_block
@@ -200,17 +108,17 @@ typedef struct entry
     uint32_t count;
 } entry;
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void* ptr_shift(void *base, size_t shift_bytes)
-{
-    return (void *)((uint8_t *)base + shift_bytes);
-}
+// //----------------------------------------------------------------------------------------------------------------------------
+// static inline void* ptr_shift(void *base, size_t shift_bytes)
+// {
+//     return (void *)((uint8_t *)base + shift_bytes);
+// }
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline const void* ptr_shift_const(const void *base, size_t shift_bytes)
-{
-    return (const void *)((const uint8_t *)base + shift_bytes);
-}
+// //----------------------------------------------------------------------------------------------------------------------------
+// static inline const void* ptr_shift_const(const void *base, size_t shift_bytes)
+// {
+//     return (const void *)((const uint8_t *)base + shift_bytes);
+// }
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline const void* get_block(const void *base, size_t elem_size, uint32_t width_blocks, uint32_t x, uint32_t y)
@@ -221,17 +129,19 @@ static inline const void* get_block(const void *base, size_t elem_size, uint32_t
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t delta_encode_wrap(uint8_t prev, uint8_t curr)
-{
-    return curr - prev; // automatically wraps modulo 256
-}
+// static inline uint8_t delta_encode_wrap(uint8_t prev, uint8_t curr)
+// {
+//     return curr - prev; // automatically wraps modulo 256
+// }
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t delta_decode_wrap(uint8_t prev, uint8_t delta_encoded)
-{
-    return prev + delta_encoded; // automatically wraps modulo 256
-}
+// //----------------------------------------------------------------------------------------------------------------------------
+// static inline uint8_t delta_decode_wrap(uint8_t prev, uint8_t delta_encoded)
+// {
+//     return prev + delta_encoded; // automatically wraps modulo 256
+// }
 
+//----------------------------------------------------------------------------------------------------------------------
+static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline void bc1_extract_565(uint16_t color, uint8_t *r5, uint8_t *g6, uint8_t *b5)
@@ -509,90 +419,90 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
     vq_top_table(input, stride, num_blocks, output, num_entries);
 #endif
 
-    // // sort table for compression
-    // qsort(output, *num_entries, sizeof(uint32_t), compare_entries);
+    // sort table for compression
+    qsort(output, *num_entries, sizeof(uint32_t), compare_entries);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-uint32_t nearest48(const uint64_t* table, uint32_t table_size, uint64_t bitfield)
-{
-    uint32_t scores[TABLE_SIZE];
-    uint32_t i = 0;
+// uint32_t nearest48(const uint64_t* table, uint32_t table_size, uint64_t bitfield)
+// {
+//     uint32_t scores[TABLE_SIZE];
+//     uint32_t i = 0;
 
-    const uint64_t MASK48 = 0x0000FFFFFFFFFFFFull;
+//     const uint64_t MASK48 = 0x0000FFFFFFFFFFFFull;
 
-#ifdef BC_CRUNCH_NEON
-    uint64x2_t bf_vec   = vdupq_n_u64(bitfield & MASK48);
-    uint64x2_t mask_vec = vdupq_n_u64(MASK48);
+// #ifdef BC_CRUNCH_NEON
+//     uint64x2_t bf_vec   = vdupq_n_u64(bitfield & MASK48);
+//     uint64x2_t mask_vec = vdupq_n_u64(MASK48);
 
-    for (; i + 1 < table_size; i += 2)
-    {
-        uint64x2_t dict  = vandq_u64(vld1q_u64(&table[i]), mask_vec);
-        uint64x2_t delta = veorq_u64(dict, bf_vec);
+//     for (; i + 1 < table_size; i += 2)
+//     {
+//         uint64x2_t dict  = vandq_u64(vld1q_u64(&table[i]), mask_vec);
+//         uint64x2_t delta = veorq_u64(dict, bf_vec);
 
-        uint8x16_t cnt = vcntq_u8(vreinterpretq_u8_u64(delta));
+//         uint8x16_t cnt = vcntq_u8(vreinterpretq_u8_u64(delta));
 
-        // split lanes correctly
-        uint8x8_t cnt_lo = vget_low_u8(cnt);
-        uint8x8_t cnt_hi = vget_high_u8(cnt);
+//         // split lanes correctly
+//         uint8x8_t cnt_lo = vget_low_u8(cnt);
+//         uint8x8_t cnt_hi = vget_high_u8(cnt);
 
-        // horizontal add per 64-bit lane
-        scores[i + 0] = vaddlv_u8(cnt_lo);
-        scores[i + 1] = vaddlv_u8(cnt_hi);
-    }
-#endif
+//         // horizontal add per 64-bit lane
+//         scores[i + 0] = vaddlv_u8(cnt_lo);
+//         scores[i + 1] = vaddlv_u8(cnt_hi);
+//     }
+// #endif
 
-    // tail
-    for (; i < table_size; ++i)
-    {
-        uint64_t delta = (table[i] ^ bitfield) & MASK48;
-        scores[i] = (uint32_t)popcount64(delta);
-    }
+//     // tail
+//     for (; i < table_size; ++i)
+//     {
+//         uint64_t delta = (table[i] ^ bitfield) & MASK48;
+//         scores[i] = (uint32_t)popcount64(delta);
+//     }
 
-    // find best
-    uint32_t best_index = 0;
-    uint32_t best_score = UINT32_MAX;
+//     // find best
+//     uint32_t best_index = 0;
+//     uint32_t best_score = UINT32_MAX;
 
-    for (uint32_t j = 0; j < table_size; ++j)
-    {
-        uint32_t score = scores[j];
-        if (score < best_score ||
-           (score == best_score && table[j] > table[best_index]))
-        {
-            best_score = score;
-            best_index = j;
-        }
-    }
+//     for (uint32_t j = 0; j < table_size; ++j)
+//     {
+//         uint32_t score = scores[j];
+//         if (score < best_score ||
+//            (score == best_score && table[j] > table[best_index]))
+//         {
+//             best_score = score;
+//             best_index = j;
+//         }
+//     }
 
-    return ((best_score & 0xffff) << 16) | (best_index & 0xffff);
-}
-
-//----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
-{
-    uint32_t bit_offset = pixel_index * 3;
-    uint64_t bits = ((uint64_t)b->indices[0]) | ((uint64_t)b->indices[1] << 16) | ((uint64_t)b->indices[2] << 32);
-    uint8_t index = (uint8_t)((bits >> bit_offset) & 0x7);
-    return index;
-}
+//     return ((best_score & 0xffff) << 16) | (best_index & 0xffff);
+// }
 
 //----------------------------------------------------------------------------------------------------------------------------
-static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t data)
-{
-    uint32_t bit_offset = pixel_index * 3;
-    uint32_t word_index = bit_offset >> 4;
-    uint32_t bit_in_word = bit_offset & 0xF;
+// static inline uint8_t bc4_get_index(const bc4_block* b, uint32_t pixel_index)
+// {
+//     uint32_t bit_offset = pixel_index * 3;
+//     uint64_t bits = ((uint64_t)b->indices[0]) | ((uint64_t)b->indices[1] << 16) | ((uint64_t)b->indices[2] << 32);
+//     uint8_t index = (uint8_t)((bits >> bit_offset) & 0x7);
+//     return index;
+// }
 
-    uint16_t mask = 0x7 << bit_in_word;
-    b->indices[word_index] = (b->indices[word_index] & ~mask) | ((data & 0x7) << bit_in_word);
+//----------------------------------------------------------------------------------------------------------------------------
+// static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t data)
+// {
+//     uint32_t bit_offset = pixel_index * 3;
+//     uint32_t word_index = bit_offset >> 4;
+//     uint32_t bit_in_word = bit_offset & 0xF;
 
-    // if the 3 bits spill into the next word
-    if (bit_in_word > 13)  // last 2 or 1 bits spill
-    {
-        uint16_t spill_bits = (data & 0x7) >> (16 - bit_in_word);
-        b->indices[word_index + 1] = (b->indices[word_index + 1] & ~(0x7 >> (16 - bit_in_word))) | spill_bits;
-    }
-}
+//     uint16_t mask = 0x7 << bit_in_word;
+//     b->indices[word_index] = (b->indices[word_index] & ~mask) | ((data & 0x7) << bit_in_word);
+
+//     // if the 3 bits spill into the next word
+//     if (bit_in_word > 13)  // last 2 or 1 bits spill
+//     {
+//         uint16_t spill_bits = (data & 0x7) >> (16 - bit_in_word);
+//         b->indices[word_index + 1] = (b->indices[word_index + 1] & ~(0x7 >> (16 - bit_in_word))) | spill_bits;
+//     }
+// }
 
 //----------------------------------------------------------------------------------------------------------------------------
 // static inline range_model* bc4_select_model(const bc4_block* b, range_model* indices)
@@ -607,8 +517,15 @@ static inline void bc4_set_index(bc4_block* b, uint32_t pixel_index, uint8_t dat
 //     return &indices[16];
 // }
 
+// static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
+
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
+// as we use a static huffman entropy encoder to be the fastest at decompression, we need two passes :
+//   - first pass : for each model, build a histogram and compute probabilities.
+//   - second pass : save the model in the stream,  then compress the texture
+//
+// static models are needed for decompression obivously
+void bc1_crunch(le_stream* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
@@ -622,25 +539,87 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
     uint32_t top_table_size;
     build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
 
-    bs_write_u8(bs, (uint8_t)(top_table_size-1));
+    // ----------
+    // FIRST PASS
+    // ----------
+    le_histogram htable_index, hmask, htable_difference;
+    histogram_init(&htable_index, 256);
+    histogram_init(&hmask, 16);
+    histogram_init(&htable_difference, 256);
 
-    for(uint32_t i=0; i<top_table_size; ++i)
+    le_histogram htable_entry;
+    histogram_init(&htable_entry, 256);
+
+    for(uint32_t i=1; i<top_table_size; ++i)
+    {
+        // table is sorted from small to big, so diff is always positive
+        uint32_t diff = top_table[i] - top_table[i-1];
+
         for(uint32_t j=0; j<4; ++j)
-            bs_write_u8(bs, (top_table[i] >> (j*8)) & 0xff);
+            htable_entry.count[(diff >> (j*8)) & 0xff]++;
+    }
 
     bc1_block previous = {0};
+    for(uint32_t y = 0; y < height_blocks; ++y)
+    {
+        for(uint32_t x = 0; x < width_blocks; ++x)
+        {
+            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
+            const bc1_block* current = get_block(input, stride, width_blocks, zigzag_x, y);
 
-    uint32_t block_index = 0;
-    uint8_t block_buffer[128];
-    bytestream block_stream;
-    uint8_t block_indices_raw = 0;
-    uint8_t block_color_raw = 0;
-    uint8_t diff_table[BC1_DIFFTABLE_SIZE] = {0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x03,0x05,0x09,0x0A,0x0C,0x30,0xC0};
+            uint32_t reference = nearest32(top_table, top_table_size, current->indices) & 0xffff;
 
-    uint32_t fail_to_compress = 0;
+            assert(reference < 256);
+            htable_index.count[reference]++;
 
-    bs_init(&block_stream, block_buffer, sizeof(block_buffer));
+            uint32_t difference = current->indices ^ top_table[reference];
 
+            uint32_t mask = 0;
+            if ((difference & 0x000000FF) != 0) mask |= 1;
+            if ((difference & 0x0000FF00) != 0) mask |= 2;
+            if ((difference & 0x00FF0000) != 0) mask |= 4;
+            if ((difference & 0xFF000000) != 0) mask |= 8;
+
+            hmask.count[mask]++;
+
+            for(uint32_t j=0; j<4; ++j)
+                if (mask & (1u << j))
+                    htable_difference.count[(difference >> (j*8)) & 0xff]++;
+
+            previous = *current;
+        }
+    }
+
+    le_model table_index, diff_mask, table_entry, table_difference;
+    le_model_init(&table_index, htable_index.count, htable_index.num_symbols);
+    le_model_init(&diff_mask, hmask.count, hmask.num_symbols);
+    le_model_init(&table_entry, htable_entry.count, htable_entry.num_symbols);
+    le_model_init(&table_difference, htable_difference.count, htable_difference.num_symbols);
+
+    le_model_save(codec, &table_index);
+    le_model_save(codec, &diff_mask);
+    le_model_save(codec, &table_entry);
+    le_model_save(codec, &table_difference);
+
+    // write the top-table
+    le_write_byte(codec, top_table_size-1);
+    for(uint32_t j=0; j<4; ++j)
+        le_write_byte(codec, (top_table[0] >> (j*8)) & 0xff);    // first entry not compressed
+
+    for(uint32_t i=1; i<top_table_size; ++i)
+    {
+        // table is sorted from small to big, so diff is always positive
+        uint32_t diff = top_table[i] - top_table[i-1];
+
+        for(uint32_t j=0; j<4; ++j)
+            le_encode_byte(codec, &table_entry, (diff >> (j*8)) & 0xff);
+    }
+
+    // ----------
+    // SECOND PASS
+    // ----------
+
+    previous = (bc1_block) {0};
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
@@ -648,10 +627,6 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
             // zig-zag pattern delta compression for colors
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
             const bc1_block* current = get_block(input, stride, width_blocks, zigzag_x, y);
-
-            uint8_t dgreen[2], dblue[2], dred[2];
-            uint8_t flag_up[2];
-            
             for(uint32_t j=0; j<2; ++j)
             {
                 uint8_t current_red, current_green, current_blue;
@@ -660,498 +635,377 @@ void bc1_crunch(bytestream* bs, void* cruncher_memory, const void* input, size_t
                 bc1_extract_565(current->color[j], &current_red, &current_green, &current_blue);
                 bc1_extract_565(previous.color[j], &previous_red, &previous_green, &previous_blue);
 
-                flag_up[j] = 0;
                 if (y>0 && x!=0)
                 {
                     const bc1_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
                     uint8_t up_red, up_green, up_blue;
                     bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
 
-                    int previous_delta = int_abs(current_red - previous_red) + int_abs(current_green-previous_green) + int_abs(current_blue-previous_blue);
-                    int up_delta = int_abs(current_red-up_red) + int_abs(current_green-up_green) + int_abs(current_blue-up_blue);
-
-                    flag_up[j] = (up_delta < previous_delta) ? 1 : 0;
-
-                    // overwrite previous value to avoid using a new set of variables
-                    if (up_delta < previous_delta)
+                    if (y>0 && x!=0)
                     {
-                        previous_red = up_red;
-                        previous_green = up_green;
-                        previous_blue = up_blue;
+                        const bc1_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
+                        uint8_t up_red, up_green, up_blue;
+                        bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
+
+                        previous_red = (previous_red + up_red) / 2;
+                        previous_green = (previous_green + up_green) / 2;
+                        previous_blue = (previous_blue + up_blue) / 2;
                     }
                 }
 
-                int delta_green = current_green - previous_green;
+                int dred = current_red - previous_red;
+                int dgreen = current_green - previous_green;
+                int dblue = current_blue - previous_blue;
 
-                dred[j] =  zigzag_encode((int)current_red - (int)previous_red - delta_green/2);
-                dgreen[j] =  zigzag_encode(delta_green);
-                dblue[j] = zigzag_encode((int)current_blue - (int)previous_blue - delta_green/2);
+                // first encode green delta
+                le_encode_delta(codec, (int8_t) dgreen);
+
+                // then encode red and blue delta based on green delta
+                // assuming some relation between green and other components
+                dgreen /= 2;
+                dred -= dgreen;
+                dblue -= dgreen;
+
+                le_encode_delta(codec, (int8_t) (dred));
+                le_encode_delta(codec, (int8_t) (dblue));
             }
 
-            bool color_escape = (dgreen[0] > 7 || dgreen[1] > 7 || dblue[0] > 3 || dblue[1] > 3 ||dred[0] > 3 || dred[1] > 3);
-            block_color_raw |= (color_escape ? 1 : 0) << block_index;
+            // for indices, we store the reference to "nearest" indices (can be exactly the same)
+            // and the delta with this reference
+            uint32_t reference = nearest32(top_table, top_table_size, current->indices) & 0xffff;
+            le_encode_byte(codec, &table_index, reference);
 
-            uint8_t color_byte0 = flag_up[0] << 7 | flag_up[1] << 6 | (dgreen[0]&0x7) << 3 | (dgreen[1]&0x7);
+            // xor the difference and encode (could be 0 if equal to reference)
+            uint32_t difference = current->indices ^ top_table[reference];
 
-            if (color_escape)
-            {
-                // escape case, paying the full price
-                bs_write_u8(&block_stream, (current->color[0] >> 8) & 0xff);
-                bs_write_u8(&block_stream, current->color[0] & 0xff);
-                bs_write_u8(&block_stream, (current->color[1] >> 8) & 0xff);
-                bs_write_u8(&block_stream, current->color[1] & 0xff);
-            }
-            else
-            {
-                bs_write_u8(&block_stream, color_byte0);
-                bs_write_u8(&block_stream, dred[0] << 6 | dred[1] << 4 | dblue[0] << 2 | dblue[1]);
-            }
+            uint32_t mask = 0;
+            if ((difference & 0x000000FF) != 0) mask |= 1;
+            if ((difference & 0x0000FF00) != 0) mask |= 2;
+            if ((difference & 0x00FF0000) != 0) mask |= 4;
+            if ((difference & 0xFF000000) != 0) mask |= 8;
 
-            uint32_t table_index = nearest32(top_table, top_table_size, current->indices) & 0xffff;
-            uint32_t difference = current->indices ^ top_table[table_index];
-            uint32_t diff_indices[4];
+            le_write_nibble(codec, mask);
 
-            // try to encode the diff with the difftable
+            // only encode the bytes that are actually non-zero
             for(uint32_t j=0; j<4; ++j)
-            {
-                uint8_t value = (difference>>(j*8)) & 0xff;
-                diff_indices[j] = UINT32_MAX;
-
-                for(uint32_t i=0; i<BC1_DIFFTABLE_SIZE && (diff_indices[j] == UINT32_MAX); ++i)
-                    if (value == diff_table[i])
-                        diff_indices[j] = i;
-            }
-
-            bool indices_escape = (diff_indices[0] > 15) || (diff_indices[1] > 15) || 
-                               (diff_indices[2] > 15) || (diff_indices[3] > 15);
-
-            block_indices_raw |= (indices_escape ? 1 : 0) << block_index;
-
-            if (indices_escape)
-            {
-                fail_to_compress++;
-                for(uint32_t j=0; j<4; ++j)
-                    bs_write_u8(&block_stream, (current->indices >> (j*8)) & 0xff);
-            }
-            else
-            {
-                uint8_t mode = ((diff_indices[0] < 4) && (diff_indices[1] < 4) && 
-                                (diff_indices[2] < 4) && (diff_indices[3] < 4)) ? 1 : 0;
-
-                bs_write_u8(&block_stream, (mode<<7) | table_index);
-
-                if (mode == 1)
-                {
-                    bs_write_u8(&block_stream, (diff_indices[0]<<6) | (diff_indices[1] << 4) |
-                                               (diff_indices[2]<<2) | diff_indices[3]);
-                }
-                else
-                {
-                    bs_write_u8(&block_stream, (diff_indices[0]<<4) | diff_indices[1]);
-                    bs_write_u8(&block_stream, (diff_indices[2]<<4) | diff_indices[3]);
-                }
-            }
-
-            // flush 8 blocks
-            if (++block_index==8)
-            {
-                bs_write_u8(bs, block_color_raw);
-                bs_write_u8(bs, block_indices_raw);
-                bs_write_buffer(bs, &block_stream);
-                bs_rewind(&block_stream);
-                block_index = 0;
-                block_indices_raw = 0;
-                block_color_raw = 0;
-            }
+                if (mask & (1u << j))
+                    le_encode_byte(codec, &table_difference, (difference >> (j*8)) & 0xff);
 
             previous = *current;
         }
     }
 
-    bs_write_buffer(bs, &block_stream);
-
-    float num_blocks = height_blocks * width_blocks;
-    printf("fail_to_compress ratio : %f\n", (float) fail_to_compress / num_blocks);
+    printf("table_difference model stats\n");
+    printf("    num_hot4 = %u\n", table_difference.num_hot_tier0);
+    printf("    num_hot20 = %u\n", table_difference.num_hot_tier1);
+    printf("    num_hot36 = %u\n", table_difference.num_hot_tier2);
+    printf("    num_raw = %u\n", table_difference.num_raw);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_decrunch(bytestream* bs, uint32_t width, uint32_t height, void* output, size_t stride)
+void bc1_decrunch(le_stream* codec, uint32_t width, uint32_t height, void* output, size_t stride)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
+    
+    le_model table_index, diff_mask, table_entry, table_difference;
+    le_model_load(codec, &table_index);
+    le_model_load(codec, &diff_mask);
+    le_model_load(codec, &table_entry);
+    le_model_load(codec, &table_difference);
 
     uint32_t top_table[TABLE_SIZE];
-    uint32_t top_table_size = bs_read_u8(bs) + 1;
+    uint32_t top_table_size = le_read_byte(codec)+1;
 
-    for(uint32_t i=0; i<top_table_size; ++i)
+    top_table[0] = 0;
+    for(uint32_t j=0; j<4; ++j)
+        top_table[0] |= le_read_byte(codec) << (j*8);
+
+    for(uint32_t i=1; i<top_table_size; ++i)
     {
-        top_table[i] = 0;
+        uint32_t diff = 0;
         for(uint32_t j=0; j<4; ++j)
-            top_table[i] |= bs_read_u8(bs) << (j*8);
+            diff |= le_decode_byte(codec, &table_entry) << (j*8);
+
+        top_table[i] = top_table[i-1] + diff;
     }
 
     bc1_block previous = {0};
-
-    uint32_t block_index = 0;
-    uint8_t block_indices_raw = 0;
-    uint8_t block_color_raw = 0;
-    uint8_t diff_table[BC1_DIFFTABLE_SIZE] = {0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x03,0x05,0x09,0x0A,0x0C,0x30,0xC0};
-
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
         {
-            if (block_index == 0)
-            {
-                block_color_raw = bs_read_u8(bs);
-                block_indices_raw = bs_read_u8(bs);
-            }
-
             // zig-zag pattern color
             uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
             bc1_block* current = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y);
-
-            // escape code, full r5g6b5 color encoded :(
-            if (block_color_raw & (1<<block_index))
+            for (uint32_t j = 0; j < 2; ++j)
             {
-                current->color[0] = bs_read_u8(bs) << 8;
-                current->color[0]|= bs_read_u8(bs);
-                current->color[1] = bs_read_u8(bs) << 8;
-                current->color[1]|= bs_read_u8(bs);
-            }
-            else
-            {
-                uint8_t color_byte0 = bs_read_u8(bs);
-                uint8_t flag_up[2];
-                flag_up[0] = (color_byte0>>7) & 0x1;
-                flag_up[1] = (color_byte0>>6) & 0x1;
-                uint8_t color_byte1 = bs_read_u8(bs);
+                uint8_t reference_red, reference_green, reference_blue;
+                bc1_extract_565(previous.color[j], &reference_red, &reference_green, &reference_blue);
 
-                int dgreen[2], dred[2], dblue[2];
-
-                dgreen[0] = zigzag_decode((color_byte0>>3)&0x7);
-                dgreen[1] = zigzag_decode(color_byte0&0x7);
-                dred[0] = zigzag_decode((color_byte1>>6)&0x3) + dgreen[0] / 2;
-                dred[1] = zigzag_decode((color_byte1>>4)&0x3) + dgreen[1] / 2;
-                dblue[0] = zigzag_decode((color_byte1>>2)&0x3) + dgreen[0] / 2;
-                dblue[1] = zigzag_decode(color_byte1&0x3) + dgreen[1] / 2;
-
-                for (uint32_t j = 0; j < 2; ++j)
+                if (y>0 && x!=0)
                 {
-                    uint8_t reference_red, reference_green, reference_blue;
-                    bc1_extract_565(previous.color[j], &reference_red, &reference_green, &reference_blue);
-                    if (flag_up[j])
-                    {
-                        bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
-                        bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
-                    }
+                    const bc1_block* up = get_block(output, stride, width_blocks, zigzag_x, y-1);
+                    uint8_t up_red, up_green, up_blue;
+                    bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
 
-                    uint8_t current_green_value = (int)reference_green + dgreen[j];
-                    uint8_t current_red_value = (int)reference_red + dred[j];
-                    uint8_t current_blue_value = (int)reference_blue + dblue[j];
-
-                    current->color[j] = bc1_pack_565(current_red_value, current_green_value, current_blue_value);
-                }
-            }
-
-            uint32_t difference = 0; 
-            uint32_t diff_indices[4];
-
-            if (block_indices_raw & (1<<block_index))
-            {
-                current->indices = 0;
-                for(uint32_t j=0; j<4; ++j)
-                    current->indices |= ((uint32_t)bs_read_u8(bs)) << (j*8);
-
-                difference = previous.indices ^ current->indices;
-            }
-            else
-            {
-                uint8_t data = bs_read_u8(bs);
-                uint8_t table_index = data&0x7f;
-                uint8_t mode = (data>>7)&1;
-
-                if (mode == 0)
-                {
-                    data = bs_read_u8(bs);
-                    diff_indices[0] = data >> 4;
-                    diff_indices[1] = data & 0xf;
-
-                    data = bs_read_u8(bs);
-                    diff_indices[2] = data >> 4;
-                    diff_indices[3] = data & 0xf;
-                }
-                else
-                {
-                    data = bs_read_u8(bs);
-                    diff_indices[0] = (data >> 6) & 0x3;
-                    diff_indices[1] = (data >> 4) & 0x3;
-                    diff_indices[2] = (data >> 2) & 0x3;
-                    diff_indices[3] = (data >> 0) & 0x3;
+                    reference_red = (reference_red + up_red) / 2;
+                    reference_green = (reference_green + up_green) / 2;
+                    reference_blue = (reference_blue + up_blue) / 2;
                 }
 
-                for(uint32_t j=0; j<4; ++j)
-                    difference |= diff_table[diff_indices[j]] << (j*8);
+                int8_t delta_green = le_decode_delta(codec);
+                int8_t delta_red = le_decode_delta(codec);
+                int8_t delta_blue = le_decode_delta(codec);
 
-                current->indices = top_table[table_index] ^ difference;
+                // red and blue delta are based on green delta
+                int dgreen_orig = delta_green;
+                int current_green_value = reference_green + dgreen_orig;
+                int dgreen_halved = dgreen_orig / 2;
+
+                int dred_orig = delta_red + dgreen_halved;
+                int dblue_orig = delta_blue + dgreen_halved;
+
+                int current_red_value = reference_red + dred_orig;
+                int current_blue_value = reference_blue + dblue_orig;
+
+                current->color[j] = bc1_pack_565((uint8_t)current_red_value, (uint8_t)current_green_value, (uint8_t)current_blue_value);
             }
 
-            if (++block_index == 8)
-            {
-                block_index = 0;
-                block_indices_raw = 0;
-                block_color_raw = 0;
-            }
+            // indices difference with top table
+            uint32_t reference = le_decode_byte(codec, &table_index);
+            uint32_t mask = le_read_nibble(codec);
+
+            uint32_t difference=0;
+            for(uint32_t j=0; j<4; ++j)
+                if (mask & (1 << j))
+                    difference = difference | (le_decode_byte(codec, &table_difference) << (j*8));
+
+            current->indices =  difference ^ top_table[reference];
 
             previous = *current;
         }
     }
 }
 
-/*
-
 //----------------------------------------------------------------------------------------------------------------------------
-void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
-{
-    assert((width%4 == 0) && (height%4 == 0));
-    assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
+// void bc4_crunch(range_codec* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
+// {
+//     assert((width%4 == 0) && (height%4 == 0));
+//     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
 
-    uint32_t height_blocks = height/4;
-    uint32_t width_blocks = width/4;
+//     uint32_t height_blocks = height/4;
+//     uint32_t width_blocks = width/4;
 
-    range_model color_delta[2];
-    model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
-    model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
+//     range_model color_delta[2];
+//     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
+//     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-    range_model color_reference, first_index, use_dict, dict_reference; 
-    model_init(&color_reference, 2);
-    model_init(&first_index, 1<<3);
-    model_init(&use_dict, 2);
-    model_init(&dict_reference, DICTIONARY_SIZE);
+//     range_model color_reference, first_index, use_dict, dict_reference; 
+//     model_init(&color_reference, 2);
+//     model_init(&first_index, 1<<3);
+//     model_init(&use_dict, 2);
+//     model_init(&dict_reference, DICTIONARY_SIZE);
 
-    range_model indices[24];
-    for(uint32_t i=0; i<24; ++i)
-        model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
+//     range_model indices[24];
+//     for(uint32_t i=0; i<24; ++i)
+//         model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
 
-    range_model dict_delta[16];
-    for(uint32_t i=0; i<16; ++i)
-        model_init(&dict_delta[i], 1<<3);
+//     range_model dict_delta[16];
+//     for(uint32_t i=0; i<16; ++i)
+//         model_init(&dict_delta[i], 1<<3);
 
-    bc4_block empty_block = {.color = {0, 128}};
-    const bc4_block* previous = &empty_block;
+//     bc4_block previous = {.color = {0, 128}};
 
-    // dictionary initialization
-    uint64_t dictionary[DICTIONARY_SIZE];
-    for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
-        dictionary[i] = UINT64_MAX;
+//     // dictionary initialization
+//     uint64_t dictionary[DICTIONARY_SIZE];
+//     for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
+//         dictionary[i] = UINT64_MAX;
 
-    for(uint32_t y = 0; y < height_blocks; ++y)
-    {
-        for(uint32_t x = 0; x < width_blocks; ++x)
-        {
-            const bc4_block* current = get_block(input, stride, width_blocks, x, y);
+//     for(uint32_t y = 0; y < height_blocks; ++y)
+//     {
+//         for(uint32_t x = 0; x < width_blocks; ++x)
+//         {
+//             const bc4_block* current = get_block(input, stride, width_blocks, x, y);
 
-            int reference = previous->color[0];
-            if (y>0)
-            {
-                const bc4_block* up = get_block(input, stride, width_blocks, x, y-1);
-                if (x>0)
-                {
-                    const bc4_block* up_left = get_block(input, stride, width_blocks, x-1, y-1);
-                    reference += up->color[0] - up_left->color[0];
-                }
-                else
-                    reference = up->color[0];
-            }
+//             int reference = previous.color[0];
+//             if (y>0)
+//             {
+//                 const bc4_block* up = get_block(input, stride, width_blocks, x, y-1);
+//                 if (x>0)
+//                 {
+//                     const bc4_block* up_left = get_block(input, stride, width_blocks, x-1, y-1);
+//                     reference += up->color[0] - up_left->color[0];
+//                 }
+//                 else
+//                     reference = up->color[0];
+//             }
 
-            if (reference < 0) reference = 0;
-            if (reference > 255) reference = 255;
+//             if (reference < 0) reference = 0;
+//             if (reference > 255) reference = 255;
 
-            enc_put(codec, &color_delta[0], delta_encode_wrap((uint8_t)reference, current->color[0]));
-            enc_put(codec, &color_delta[1], delta_encode_wrap(current->color[0], current->color[1]));
+//             enc_put(codec, &color_delta[0], delta_encode_wrap((uint8_t)reference, current->color[0]));
+//             enc_put(codec, &color_delta[1], delta_encode_wrap(current->color[0], current->color[1]));
 
-            // search in the dictionary for the current bitfield
-            uint64_t bitfield = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
-            uint32_t dict_lookup = nearest48(dictionary, DICTIONARY_SIZE, bitfield);
-            uint16_t score = dict_lookup>>16;
-            uint16_t found_index = dict_lookup&0xffff;
+//             // search in the dictionary for the current bitfield
+//             uint64_t bitfield = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
+//             uint32_t dict_lookup = nearest48(dictionary, DICTIONARY_SIZE, bitfield);
+//             uint16_t score = dict_lookup>>16;
+//             uint16_t found_index = dict_lookup&0xffff;
             
-            // found or similar? just write the dictionary index
-            if (score < 4)
-            {
-                enc_put(codec, &use_dict, 1);
-                enc_put(codec, &dict_reference, found_index);
+//             // found or similar? just write the dictionary index
+//             if (score < 5 && ((y*width_blocks) + x > 32))
+//             {
+//                 enc_put(codec, &use_dict, 1);
+//                 enc_put(codec, &dict_reference, found_index);
                 
-                uint64_t reference = dictionary[found_index];
-                uint64_t bitfield_delta = reference ^ bitfield;
-                for(uint32_t j=0; j<16; ++j)
-                    enc_put(codec, &dict_delta[j], (bitfield_delta>>(j*3))&0x7);
+//                 uint64_t reference = dictionary[found_index];
+//                 uint64_t bitfield_delta = reference ^ bitfield;
+//                 for(uint32_t j=0; j<16; ++j)
+//                     enc_put(codec, &dict_delta[j], (bitfield_delta>>(j*3))&0x7);
 
-                if(found_index > 0)
-                {
-                    uint64_t temp = dictionary[found_index];
-                    memmove(&dictionary[1], &dictionary[0], found_index * sizeof(uint64_t));
-                    dictionary[0] = temp;
-                }
-            }
-            else
-            {
-                // store the entry in the dictionary
-                memmove(&dictionary[1], &dictionary[0], (DICTIONARY_SIZE - 1) * sizeof(uint64_t));
-                dictionary[0] = bitfield;
+//                 if(found_index > 0)
+//                 {
+//                     uint64_t temp = dictionary[found_index];
+//                     uint32_t target = found_index / 2;
+//                     memmove(&dictionary[target+1], &dictionary[target], (found_index - target) * sizeof(uint64_t));
+//                     dictionary[target] = temp;
+//                 }
+//             }
+//             else
+//             {
+//                 // store the entry in the middle of dictionary
+//                 uint32_t middle = DICTIONARY_SIZE/2;
+//                 memmove(&dictionary[middle+1], &dictionary[middle], (DICTIONARY_SIZE - middle - 1) * sizeof(uint64_t));
+//                 dictionary[middle] = bitfield;
 
-                // write the indices with local difference delta encoded
-                enc_put(codec, &use_dict, 0);
+//                 // write the indices with local difference delta encoded
+//                 enc_put(codec, &use_dict, 0);
 
-                uint8_t block_previous = bc4_get_index(current, 0);
-                enc_put(codec, &first_index, block_previous);
+//                 uint8_t block_previous = bc4_get_index(current, 0);
+//                 enc_put(codec, &first_index, block_previous);
 
-                range_model* model = bc4_select_model(current, indices);
-                for(uint32_t j=1; j<16; ++j)
-                {
-                    uint8_t data = bc4_get_index(current, block_zigzag[j]);
-                    enc_put(codec, &model[block_previous], block_previous ^ data);
-                    block_previous = data;
-                }
-            }
-            previous = current;
-        }
-    }
-}
+//                 range_model* model = bc4_select_model(current, indices);
+//                 for(uint32_t j=1; j<16; ++j)
+//                 {
+//                     uint8_t data = bc4_get_index(current, block_zigzag[j]);
+//                     enc_put(codec, &model[block_previous], block_previous ^ data);
+//                     block_previous = data;
+//                 }
+//             }
+//             previous = *current;
+//         }
+//     }
+// }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* output, size_t stride)
-{
-    assert((width % 4 == 0) && (height % 4 == 0));
+// void bc4_decrunch(range_codec* codec, uint32_t width, uint32_t height, void* output, size_t stride)
+// {
+//     assert((width % 4 == 0) && (height % 4 == 0));
 
-    uint32_t height_blocks = height/4;
-    uint32_t width_blocks = width/4;
+//     uint32_t height_blocks = height/4;
+//     uint32_t width_blocks = width/4;
 
-    range_model color_delta[2];
-    model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
-    model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
+//     range_model color_delta[2];
+//     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
+//     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-    range_model color_reference, first_index, use_dict, dict_reference;
-    model_init(&color_reference, 2);
-    model_init(&first_index, 1<<3);
-    model_init(&use_dict, 2);
-    model_init(&dict_reference, DICTIONARY_SIZE);
+//     range_model color_reference, first_index, use_dict, dict_reference;
+//     model_init(&color_reference, 2);
+//     model_init(&first_index, 1<<3);
+//     model_init(&use_dict, 2);
+//     model_init(&dict_reference, DICTIONARY_SIZE);
 
-    range_model indices[24];
-    for(uint32_t i=0; i<24; ++i)
-        model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
+//     range_model indices[24];
+//     for(uint32_t i=0; i<24; ++i)
+//         model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
 
-    range_model dict_delta[16];
-    for(uint32_t i=0; i<16; ++i)
-        model_init(&dict_delta[i], 1<<3);
+//     range_model dict_delta[16];
+//     for(uint32_t i=0; i<16; ++i)
+//         model_init(&dict_delta[i], 1<<3);
 
-    bc4_block empty_block = {.color = {0, 128}};
-    bc4_block* previous = &empty_block;
+//     bc4_block previous = {.color = {0, 128}};
 
-    // dictionary initialization
-    uint64_t dictionary[DICTIONARY_SIZE];
-    for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
-        dictionary[i] = UINT64_MAX;
+//     // dictionary initialization
+//     uint64_t dictionary[DICTIONARY_SIZE];
+//     for(uint32_t i=0; i<DICTIONARY_SIZE; ++i)
+//         dictionary[i] = UINT64_MAX;
 
-    for(uint32_t y = 0; y < height_blocks; ++y)
-    {
-        for(uint32_t x = 0; x < width_blocks; ++x)
-        {
-            bc4_block* current = (bc4_block*) get_block(output, stride, width_blocks, x, y);
-            int reference = previous->color[0];
-            if (y>0)
-            {
-                const bc4_block* up = get_block(output, stride, width_blocks, x, y-1);
-                if (x>0)
-                {
-                    const bc4_block* up_left = get_block(output, stride, width_blocks, x-1, y-1);
-                    reference += up->color[0] - up_left->color[0];
-                }
-                else
-                    reference = up->color[0];
-            }
+//     for(uint32_t y = 0; y < height_blocks; ++y)
+//     {
+//         for(uint32_t x = 0; x < width_blocks; ++x)
+//         {
+//             bc4_block* current = (bc4_block*) get_block(output, stride, width_blocks, x, y);
+//             int reference = previous.color[0];
+//             if (y>0)
+//             {
+//                 const bc4_block* up = get_block(output, stride, width_blocks, x, y-1);
+//                 if (x>0)
+//                 {
+//                     const bc4_block* up_left = get_block(output, stride, width_blocks, x-1, y-1);
+//                     reference += up->color[0] - up_left->color[0];
+//                 }
+//                 else
+//                     reference = up->color[0];
+//             }
 
-            if (reference < 0) reference = 0;
-            if (reference > 255) reference = 255;
+//             if (reference < 0) reference = 0;
+//             if (reference > 255) reference = 255;
 
-            current->color[0] = delta_decode_wrap((uint8_t)reference, dec_get(codec, &color_delta[0]));
-            current->color[1] = delta_decode_wrap(current->color[0], dec_get(codec, &color_delta[1]));
+//             current->color[0] = delta_decode_wrap((uint8_t)reference, dec_get(codec, &color_delta[0]));
+//             current->color[1] = delta_decode_wrap(current->color[0], dec_get(codec, &color_delta[1]));
 
-            if (dec_get(codec, &use_dict))
-            {
-                // data should be in the dictionary
-                uint32_t found_index = dec_get(codec, &dict_reference);
-                uint64_t reference = dictionary[found_index];
-                uint64_t bitfield = 0;
+//             if (dec_get(codec, &use_dict))
+//             {
+//                 // data should be in the dictionary
+//                 uint32_t found_index = dec_get(codec, &dict_reference);
+//                 uint64_t reference = dictionary[found_index];
+//                 uint64_t bitfield = 0;
     
-                for(uint32_t j=0; j<16; ++j)
-                {
-                    uint64_t byte = (uint64_t)dec_get(codec, &dict_delta[j]);
-                    bitfield |= (byte << (j*3));
-                }
+//                 for(uint32_t j=0; j<16; ++j)
+//                 {
+//                     uint64_t byte = (uint64_t)dec_get(codec, &dict_delta[j]);
+//                     bitfield |= (byte << (j*3));
+//                 }
 
-                bitfield ^= reference;
-                current->indices[0] = ((bitfield>>32) & 0xffff);
-                current->indices[1] = ((bitfield>>16) & 0xffff);
-                current->indices[2] = bitfield & 0xffff;
+//                 bitfield ^= reference;
+//                 current->indices[0] = ((bitfield>>32) & 0xffff);
+//                 current->indices[1] = ((bitfield>>16) & 0xffff);
+//                 current->indices[2] = bitfield & 0xffff;
 
-                if(found_index > 0)
-                {
-                    uint64_t temp = dictionary[found_index];
-                    memmove(&dictionary[1], &dictionary[0], found_index * sizeof(uint64_t));
-                    dictionary[0] = temp;
-                }
-            }
-            else
-            {
-                uint8_t block_previous = dec_get(codec, &first_index);
-                bc4_set_index(current, 0, block_previous);
+//                 if(found_index > 0)
+//                 {
+//                     uint64_t temp = dictionary[found_index];
+//                     uint32_t target = found_index / 2;  // bring the hit up but no in front (multiple hit will do that)
+//                     memmove(&dictionary[target+1], &dictionary[target], (found_index - target) * sizeof(uint64_t));
+//                     dictionary[target] = temp;
+//                 }
+//             }
+//             else
+//             {
+//                 uint8_t block_previous = dec_get(codec, &first_index);
+//                 bc4_set_index(current, 0, block_previous);
 
-                range_model* model = bc4_select_model(current, indices);
-                for(uint32_t j=1; j<16; ++j)
-                {
-                    uint8_t delta = dec_get(codec, &model[block_previous]);
-                    uint8_t data = block_previous ^ delta;
-                    bc4_set_index(current, block_zigzag[j], data);
-                    block_previous = data;
-                }
+//                 range_model* model = bc4_select_model(current, indices);
+//                 for(uint32_t j=1; j<16; ++j)
+//                 {
+//                     uint8_t delta = dec_get(codec, &model[block_previous]);
+//                     uint8_t data = block_previous ^ delta;
+//                     bc4_set_index(current, block_zigzag[j], data);
+//                     block_previous = data;
+//                 }
 
-                // store the entry in the dictionary
-                memmove(&dictionary[1], &dictionary[0], (DICTIONARY_SIZE - 1) * sizeof(uint64_t));
-                dictionary[0] = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
-            }
-            previous = current;
-        }
-    }
-}
-
-*/
-
-/*
-BC4 average compression ratio history
-
-base : 1.051032
-zig-zag : 1.090952
-up-left-xor : 1.196489
-xor endpoints : 1.124062
-just left or up : 1.211573
-block zig-zag xor : 1.211644
-xor-delta dictionary :  : 1.227614
-move-to-front dictionary : 1.232521
-16x 3bits model for dict xor 1.234481
-contextual model for dictionary miss : 1.298764
-use endpoints range for context (<32) : 1.301263
-endpoints range (<16) :  1.304174
-endpoints range (<8) : 1.312253
-multiple buckets : 1.313912
-second endpoint encoding from first one : 1.3175
-removed zig-zag, use left+up-up_left : 1.324589
-removed circular dictionnary 1.327702
-fixed x=0 block: 1.327747
-score < 4 : 1.336385
-*/
+//                 // store the entry in the middle of dictionary
+//                 uint32_t middle = DICTIONARY_SIZE/2;
+//                 memmove(&dictionary[middle+1], &dictionary[middle], (DICTIONARY_SIZE - middle - 1) * sizeof(uint64_t));
+//                 dictionary[middle] = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
+//             }
+//             previous = *current;
+//         }
+//     }
+// }
 
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -1170,14 +1024,15 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
     assert(cruncher_memory != NULL && "bc_crunch needs memory to run, allocate a buffer of size crunch_min_size()");
     assert(input != NULL);
 
-    bytestream stream;
-    bs_init(&stream, output, length);
+    le_stream codec;
+    le_init(&codec, output, length);
+    le_begin_encode(&codec);
 
     switch(format)
     {
     case bc1 : 
         {
-            bc1_crunch(&stream, cruncher_memory, input, sizeof(bc1_block), width, height);
+            bc1_crunch(&codec, cruncher_memory, input, sizeof(bc1_block), width, height);
             break;
         }
     // case bc3 : 
@@ -1202,18 +1057,19 @@ size_t bc_crunch(void* cruncher_memory, const void* input, uint32_t width, uint3
 
     default: break;
     }
-    return bs_offset(&stream);
+    return le_end_encode(&codec);
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
 void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t height, enum bc_format format, void* output)
 {
-    bytestream stream;
-    bs_init(&stream, (void*)input, length);
+    le_stream codec;
+    le_init(&codec, (void*)input, length);
+    le_begin_decode(&codec);
 
     switch(format)
     {
-    case bc1 : bc1_decrunch(&stream, width, height, output, sizeof(bc1_block)); break;
+    case bc1 : bc1_decrunch(&codec, width, height, output, sizeof(bc1_block)); break;
     // case bc3 : 
     //     {
     //         size_t block_size = sizeof(bc1_block) + sizeof(bc4_block);
@@ -1231,4 +1087,6 @@ void bc_decrunch(const void* input, size_t length, uint32_t width, uint32_t heig
     //     }
     default: break;
     }
+
+    le_end_decode(&codec);
 }
