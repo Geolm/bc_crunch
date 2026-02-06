@@ -42,7 +42,6 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include "lite_encoding.h"
 
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
     #include <arm_neon.h>
@@ -86,6 +85,502 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
     #define popcount64(x) __builtin_popcountll(x)
     #define popcount(x) __builtin_popcount(x)
 #endif
+
+
+#define LE_MODEL_MAX_HOT (36)
+#define LE_HISTOGRAM_SIZE (256)
+
+enum le_mode
+{
+    le_mode_idle,
+    le_mode_encode,
+    le_mode_decode
+};
+
+typedef struct le_stream
+{
+    uint8_t* buffer;
+    uint32_t bit_offset;
+    size_t position;
+    size_t size;
+
+    uint64_t bit_reservoir;
+    uint32_t bits_available;
+
+    enum le_mode mode;
+} le_stream;
+
+typedef struct le_model
+{
+    uint8_t hot_values[LE_MODEL_MAX_HOT];
+    uint8_t cold_min;
+    uint8_t cold_max;
+    uint8_t cold_num_bits;
+
+#ifdef LE_STATS
+    uint32_t num_hot_tier0;
+    uint32_t num_hot_tier1;
+    uint32_t num_hot_tier2;
+    uint32_t num_raw;
+#endif
+} le_model;
+
+typedef struct le_histogram
+{
+    uint32_t count[LE_HISTOGRAM_SIZE];
+    uint32_t num_symbols;
+} le_histogram;
+
+
+// Dibit-delta encoding model, specialized in small delta, use a good predictor up-front to maximize compression
+//
+// Use dibit to encode delta. 
+//      (0, -1, 1)      use 2 bits
+//      (-2, +2, -3)    use 4 bits
+//      (+3, -4, +4)    use 6 bits
+//      (-5, +5, -6)    use 8 bits
+//      anything greater use 16 bits
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_refill(le_stream* s)
+{
+    // Pull bytes into the reservoir until it's full enough for any standard read
+    while (s->bits_available <= 56 && s->position < s->size)
+    {
+        s->bit_reservoir |= ((uint64_t)s->buffer[s->position]) << s->bits_available;
+        s->bits_available += 8;
+        s->position++;
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_flush(le_stream* s)
+{
+    while (s->bits_available >= 8)
+    {
+#ifdef LE_CHECKS
+        assert(s->position < s->size);
+#endif
+        s->buffer[s->position] = (uint8_t)(s->bit_reservoir & 0xFF);
+        s->bit_reservoir >>= 8;
+        s->bits_available -= 8;
+        s->position++;
+    }
+}
+
+static inline void le_init(le_stream *s, void* buffer, size_t size)
+{
+#ifdef LE_CHECKS
+    assert(s != NULL);
+    assert(buffer != NULL);
+#endif
+    s->buffer = (uint8_t*)buffer;
+    s->size = size;
+    s->position = 0;
+    s->bit_reservoir = 0;
+    s->bits_available = 0;
+    s->mode = le_mode_idle;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_begin_encode(le_stream* s)
+{
+    s->position = 0;
+    s->bit_reservoir = 0;
+    s->bits_available = 0;
+    s->mode = le_mode_encode;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline size_t le_end_encode(le_stream* s)
+{
+    while (s->bits_available > 0)
+    {
+        if (s->position < s->size)
+        {
+            s->buffer[s->position] = (uint8_t)(s->bit_reservoir & 0xFF);
+            s->bit_reservoir >>= 8;
+            s->position++;
+        }
+        
+        if (s->bits_available > 8)
+        {
+            s->bits_available -= 8;
+        }
+        else
+        {
+            s->bits_available = 0;
+        }
+    }
+
+    s->mode = le_mode_idle;
+    return s->position;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_begin_decode(le_stream* s)
+{
+    s->position = 0;
+    s->bit_reservoir = 0;
+    s->bits_available = 0;
+    s->mode = le_mode_decode;
+    le_refill(s);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_end_decode(le_stream* s)
+{
+    s->mode = le_mode_idle;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_write_dibit(le_stream* s, uint8_t dibit)
+{
+    s->bit_reservoir |= ((uint64_t)(dibit & 0x03) << s->bits_available);
+    s->bits_available += 2;
+    if (s->bits_available >= 32)
+    {
+        le_flush(s);
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_write_nibble(le_stream* s, uint8_t nibble)
+{
+    s->bit_reservoir |= ((uint64_t)(nibble & 0x0F) << s->bits_available);
+    s->bits_available += 4;
+    if (s->bits_available >= 32)
+    {
+        le_flush(s);
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_write_byte(le_stream* s, uint8_t value)
+{
+    s->bit_reservoir |= ((uint64_t)value << s->bits_available);
+    s->bits_available += 8;
+    if (s->bits_available >= 32)
+    {
+        le_flush(s);
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_read_dibit(le_stream* s)
+{
+    if (s->bits_available < 2)
+    {
+        le_refill(s);
+    }
+
+    uint8_t value = (uint8_t)(s->bit_reservoir & 0x03);
+    s->bit_reservoir >>= 2;
+    s->bits_available -= 2;
+    return value;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_read_nibble(le_stream* s)
+{
+    if (s->bits_available < 4)
+    {
+        le_refill(s);
+    }
+
+    uint8_t value = (uint8_t)(s->bit_reservoir & 0x0F);
+    s->bit_reservoir >>= 4;
+    s->bits_available -= 4;
+    return value;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t le_read_byte(le_stream* s)
+{
+    if (s->bits_available < 8)
+    {
+        le_refill(s);
+    }
+
+    uint8_t value = (uint8_t)(s->bit_reservoir & 0xFF);
+    s->bit_reservoir >>= 8;
+    s->bits_available -= 8;
+    return value;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------
+static inline void histogram_init(le_histogram* h, uint32_t num_symbols)
+{
+#ifdef LE_CHECKS
+    assert(num_symbols > 3 && num_symbols <= 256);
+#endif
+
+    h->num_symbols = num_symbols;
+    for(uint32_t i=0; i<num_symbols; ++i)
+        h->count[i] = 0;
+}
+
+#define CONTROL_HOT_TIER0 (0)
+#define CONTROL_HOT_TIER1 (1)
+#define CONTROL_HOT_TIER2 (2)
+#define CONTROL_ESCAPE (3)
+
+// ----------------------------------------------------------------------------------------------------------------------------
+void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symbols)
+{
+    memset(model->hot_values, 0, sizeof(model->hot_values));
+
+#ifdef LE_STATS
+    model->num_hot_tier0 = 0;
+    model->num_hot_tier1 = 0;
+    model->num_hot_tier2 = 0;
+    model->num_raw = 0;
+#endif
+
+    uint32_t selected[LE_MODEL_MAX_HOT];
+    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
+        selected[i] = UINT32_MAX;
+
+    uint32_t hot_used = 0;
+
+    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
+    {
+        uint32_t max_count = 0;
+        uint32_t max_index = UINT32_MAX;
+
+        for (uint32_t s = 0; s < num_symbols; s++)
+        {
+            bool already = false;
+            for (uint32_t j = 0; j < i; j++)
+            {
+                if (selected[j] == s) 
+                { 
+                    already = true; 
+                    break; 
+                }
+            }
+
+            if (already) 
+                continue;
+
+            if (histogram[s] > max_count)
+            {
+                max_count = histogram[s];
+                max_index = s;
+            }
+        }
+
+        if (max_index == UINT32_MAX || max_count == 0)
+            break;
+
+        model->hot_values[i] = (uint8_t)max_index;
+        selected[i] = max_index;
+        hot_used++;
+    }
+
+    model->cold_min = UINT8_MAX;
+    model->cold_max = 0;
+    for(uint32_t s = 0; s < num_symbols; s++)
+    {
+        // skip hot symbols
+        bool is_hot = false;
+        for (uint32_t i = 0; i < hot_used; i++)
+        {
+            if (model->hot_values[i] == s)
+            {
+                is_hot = true;
+                break;
+            }
+        }
+
+        if (is_hot || histogram[s] == 0)
+            continue;
+
+        if (s < model->cold_min)
+            model->cold_min = (uint8_t)s;
+        if (s > model->cold_max)
+            model->cold_max = (uint8_t)s;
+    }
+
+    model->cold_num_bits = 0;
+    if (model->cold_max >= model->cold_min)
+    {
+        uint8_t range = model->cold_max - model->cold_min;
+
+        if (range >= 64)
+            model->cold_num_bits = 8;
+        else if (range >= 16)
+            model->cold_num_bits = 6;
+        else if (range >= 4)
+            model->cold_num_bits = 4;
+        else
+            model->cold_num_bits = 2;
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode(le_stream *s, le_model *model, uint8_t value)
+{
+#ifdef LE_CHECKS
+    assert(s->mode == le_mode_encode);
+#endif
+
+    // hot values
+    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
+    {
+        if (model->hot_values[i] == value)
+        {
+            if (i<4)
+            {
+                le_write_dibit(s, CONTROL_HOT_TIER0);
+                le_write_dibit(s, i);
+
+            #ifdef LE_STATS
+                model->num_hot_tier0++;
+            #endif
+            }
+            else if (i<20)
+            {
+                le_write_dibit(s, CONTROL_HOT_TIER1);
+                le_write_nibble(s, i-4);
+
+            #ifdef LE_STATS
+                model->num_hot_tier1++;
+            #endif
+            }
+            else
+            {
+                le_write_dibit(s, CONTROL_HOT_TIER2);
+                le_write_nibble(s, i-20);
+
+            #ifdef LE_STATS
+                model->num_hot_tier2++;
+            #endif
+            }
+            return;
+        }
+    }
+
+    // or escape code
+    le_write_dibit(s, CONTROL_ESCAPE);
+    le_write_byte(s, value);
+
+#ifdef LE_STATS
+    model->num_raw++;
+#endif
+}
+
+static const uint32_t consumption_lut[4] = { 2, 4, 4, 8 };
+static const uint32_t offset_lut[4]      = { 0, 4, 20, 0 };
+
+// ----------------------------------------------------------------------------------------------------------------------------
+uint8_t static inline le_decode(le_stream *s, le_model *model)
+{
+    if (s->bits_available < 16) le_refill(s);
+
+    uint64_t res = s->bit_reservoir;
+    uint32_t ctrl = (uint32_t)(res & 0x03);
+    res >>= 2;
+
+    uint32_t extra_bits = consumption_lut[ctrl];
+    uint32_t payload = (uint32_t)(res & ((1 << extra_bits) - 1));
+
+    s->bit_reservoir = res >> extra_bits;
+    s->bits_available -= (2 + extra_bits);
+
+    uint8_t hot_val = model->hot_values[payload + offset_lut[ctrl]];
+    uint8_t raw_val = (uint8_t)payload;
+
+    return (ctrl == 3) ? raw_val : hot_val;
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_model_save(le_stream *s, const le_model *model)
+{
+    le_write_nibble(s, model->cold_num_bits);
+    le_write_byte(s, model->cold_min);
+
+    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
+        le_write_byte(s, model->hot_values[i]);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+void le_model_load(le_stream *s, le_model *model)
+{
+    model->cold_num_bits = le_read_nibble(s);
+    model->cold_min = le_read_byte(s);
+    
+
+    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
+        model->hot_values[i] = le_read_byte(s);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t zigzag8_encode(int8_t v)
+{
+    return (uint8_t)((v << 1) ^ (v >> 7));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t zigzag8_decode(uint8_t v)
+{
+    return (int8_t)((v >> 1) ^ -(int8_t)(v & 1));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode_delta(le_stream *s, int8_t delta)
+{
+    uint8_t zz = zigzag8_encode(delta);
+
+    for(uint32_t i = 0; i < 4; i++)
+    {
+        if(zz < 3)
+        {
+            le_write_dibit(s, zz);
+            return;
+        }
+
+        le_write_dibit(s, 3); // escape
+        zz -= 3;
+    }
+
+    le_write_byte(s, zigzag8_encode(delta));
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t le_decode_delta(le_stream* s)
+{
+    if (s->bits_available < 16) 
+        le_refill(s);
+
+    uint64_t res = s->bit_reservoir;
+    uint64_t flipped = ~res;
+    uint32_t first_zero_bit = __builtin_ctzll(flipped); 
+    uint32_t escapes = first_zero_bit >> 1;
+
+    if (escapes > 4) 
+        escapes = 4;
+
+    uint32_t bits_to_consume;
+    uint8_t zz_value;
+
+    if (escapes < 4)
+    {
+        bits_to_consume = (escapes + 1) << 1;
+        uint32_t final_dibit = (uint32_t)((res >> (escapes << 1)) & 0x03);
+        zz_value = (uint8_t)(final_dibit + (escapes * 3));
+    }
+    else
+    {
+        bits_to_consume = 16;
+        zz_value = (uint8_t)((res >> 8) & 0xFF);
+    }
+
+    s->bit_reservoir = res >> bits_to_consume;
+    s->bits_available -= bits_to_consume;
+
+    return zigzag8_decode(zz_value);
+}
 
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct bc1_block
@@ -141,7 +636,7 @@ static inline const void* get_block(const void *base, size_t elem_size, uint32_t
 // }
 
 //----------------------------------------------------------------------------------------------------------------------
-static inline int int_abs(int a) {return (a>=0) ? a : -a;}
+// static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
 //----------------------------------------------------------------------------------------------------------------------------
 static inline void bc1_extract_565(uint16_t color, uint8_t *r5, uint8_t *g6, uint8_t *b5)
@@ -525,7 +1020,7 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
 //   - second pass : save the model in the stream,  then compress the texture
 //
 // static models are needed for decompression obivously
-void bc1_crunch(le_stream* codec, void* cruncher_memory, const void* input, size_t stride, uint32_t width, uint32_t height)
+void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const void* restrict input, size_t stride, uint32_t width, uint32_t height)
 {
     assert((width%4 == 0) && (height%4 == 0));
     assert(((uintptr_t)cruncher_memory)%sizeof(uintptr_t) == 0);
@@ -612,7 +1107,7 @@ void bc1_crunch(le_stream* codec, void* cruncher_memory, const void* input, size
         uint32_t diff = top_table[i] - top_table[i-1];
 
         for(uint32_t j=0; j<4; ++j)
-            le_encode_byte(codec, &table_entry, (diff >> (j*8)) & 0xff);
+            le_encode(codec, &table_entry, (diff >> (j*8)) & 0xff);
     }
 
     // ----------
@@ -673,7 +1168,7 @@ void bc1_crunch(le_stream* codec, void* cruncher_memory, const void* input, size
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
             // and the delta with this reference
             uint32_t reference = nearest32(top_table, top_table_size, current->indices) & 0xffff;
-            le_encode_byte(codec, &table_index, reference);
+            le_encode(codec, &table_index, reference);
 
             // xor the difference and encode (could be 0 if equal to reference)
             uint32_t difference = current->indices ^ top_table[reference];
@@ -689,21 +1184,22 @@ void bc1_crunch(le_stream* codec, void* cruncher_memory, const void* input, size
             // only encode the bytes that are actually non-zero
             for(uint32_t j=0; j<4; ++j)
                 if (mask & (1u << j))
-                    le_encode_byte(codec, &table_difference, (difference >> (j*8)) & 0xff);
+                    le_encode(codec, &table_difference, (difference >> (j*8)) & 0xff);
 
             previous = *current;
         }
     }
 
-    printf("table_difference model stats\n");
-    printf("    num_hot4 = %u\n", table_difference.num_hot_tier0);
-    printf("    num_hot20 = %u\n", table_difference.num_hot_tier1);
-    printf("    num_hot36 = %u\n", table_difference.num_hot_tier2);
-    printf("    num_raw = %u\n", table_difference.num_raw);
+    // printf("hmask histogram\n");
+
+    // for(uint32_t i=0; i<16; ++i)
+    //     printf("h[%u] = %u\t", i, hmask.count[i]);
+    
+    // printf("\n");
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_decrunch(le_stream* codec, uint32_t width, uint32_t height, void* output, size_t stride)
+void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, void* restrict output, size_t stride)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
@@ -727,7 +1223,7 @@ void bc1_decrunch(le_stream* codec, uint32_t width, uint32_t height, void* outpu
     {
         uint32_t diff = 0;
         for(uint32_t j=0; j<4; ++j)
-            diff |= le_decode_byte(codec, &table_entry) << (j*8);
+            diff |= le_decode(codec, &table_entry) << (j*8);
 
         top_table[i] = top_table[i-1] + diff;
     }
@@ -775,13 +1271,13 @@ void bc1_decrunch(le_stream* codec, uint32_t width, uint32_t height, void* outpu
             }
 
             // indices difference with top table
-            uint32_t reference = le_decode_byte(codec, &table_index);
+            uint32_t reference = le_decode(codec, &table_index);
             uint32_t mask = le_read_nibble(codec);
 
             uint32_t difference=0;
             for(uint32_t j=0; j<4; ++j)
                 if (mask & (1 << j))
-                    difference = difference | (le_decode_byte(codec, &table_difference) << (j*8));
+                    difference = difference | (le_decode(codec, &table_difference) << (j*8));
 
             current->indices =  difference ^ top_table[reference];
 
