@@ -88,6 +88,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 
 
 #define LE_ALPHABET_SIZE (256)
+#define LE_K_TREND_THRESHOLD (12)
 
 enum le_mode
 {
@@ -288,12 +289,12 @@ static inline void le_model_update(le_model* model, uint8_t value)
         model->k_trend++;
 
     // soft adaptation
-    if (model->k_trend > 4)
+    if (model->k_trend > LE_K_TREND_THRESHOLD)
     {
         model->k++;
         model->k_trend = 0;
     }
-    else if (model->k_trend < -4)
+    else if (model->k_trend < -LE_K_TREND_THRESHOLD)
     {
         model->k--;
         model->k_trend = 0;
