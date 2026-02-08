@@ -393,68 +393,33 @@ static inline uint8_t le_decode(le_stream *restrict s, le_model *restrict model)
     return value;
 }
 
-// // ----------------------------------------------------------------------------------------------------------------------------
-// static inline uint8_t zigzag8_encode(int8_t v)
-// {
-//     return (uint8_t)((v << 1) ^ (v >> 7));
-// }
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t zigzag8_encode(int8_t v)
+{
+    return (uint8_t)((v << 1) ^ (v >> 7));
+}
 
-// // ----------------------------------------------------------------------------------------------------------------------------
-// static inline int8_t zigzag8_decode(uint8_t v)
-// {
-//     return (int8_t)((v >> 1) ^ -(int8_t)(v & 1));
-// }
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t zigzag8_decode(uint8_t v)
+{
+    return (int8_t)((v >> 1) ^ -(int8_t)(v & 1));
+}
 
-// // ----------------------------------------------------------------------------------------------------------------------------
-// static inline void le_encode_delta(le_stream *s, int8_t delta)
-// {
-//     uint8_t zz = zigzag8_encode(delta);
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_encode_delta(le_stream *s, le_model* model, int8_t delta)
+{
+    uint8_t zz = zigzag8_encode(delta);
+    rice_encode(s, zz, model->k);
+    le_model_update(model, zz);
+}
 
-//     // hardcoded k=2
-//     if (zz < 20)
-//     {
-//         le_write_bits(s, 0, 1);
-//         rice_encode(s, zz, 2);
-//     }
-//     else
-//     {
-//         le_write_bits(s, 1, 1);
-//         le_write_byte(s, (uint8_t)delta);
-//     }
-// }
-
-// // ----------------------------------------------------------------------------------------------------------------------------
-// static inline int8_t le_decode_delta(le_stream* s)
-// {
-//     if (s->bits_available < 16) le_refill(s);
-
-//     uint32_t flag = (uint32_t)(s->bit_reservoir & 1U);
-//     s->bit_reservoir >>= 1;
-//     s->bits_available -= 1;
-
-//     // escape
-//     if (flag == 1)
-//     {
-//         uint8_t raw_val = (uint8_t)(s->bit_reservoir & 0xFFU);
-//         s->bit_reservoir >>= 8;
-//         s->bits_available -= 8;
-//         return (int8_t)raw_val;
-//     }
-
-//     uint32_t q = 0;
-//     while ((s->bit_reservoir & (1ULL << q)) != 0) 
-//         q++;
-    
-//     s->bit_reservoir >>= (q + 1);
-//     s->bits_available -= (q + 1);
-
-//     uint32_t r = (uint32_t)(s->bit_reservoir & 3U); // k=2, so mask 0b11
-//     s->bit_reservoir >>= 2;
-//     s->bits_available -= 2;
-
-//     uint32_t zz = (q << 2) | r;
-//     return zigzag8_decode((uint8_t)zz);
-// }
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline int8_t le_decode_delta(le_stream* s, le_model* model)
+{
+    uint8_t zz = rice_decode(s, model->k);
+    le_model_update(model, zz);
+    return zigzag8_decode(zz);
+}
 
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct bc1_block
@@ -981,7 +946,7 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
                 int dblue = current_blue - previous_blue;
 
                 // first encode green delta
-                le_encode(codec, &green, (uint8_t) (dgreen + 64));
+                le_encode_delta(codec, &green, dgreen);
 
                 // then encode red and blue delta based on green delta
                 // assuming some relation between green and other components
@@ -989,8 +954,8 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
                 dred -= dgreen;
                 dblue -= dgreen;
 
-                le_encode(codec, &red, (uint8_t) (dred + 64));
-                le_encode(codec, &blue, (uint8_t) (dblue + 64));
+                le_encode_delta(codec, &red, dred);
+                le_encode_delta(codec, &blue, dblue);
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
@@ -1075,17 +1040,16 @@ void bc1_decrunch(le_stream* codec, uint32_t width, uint32_t height, void* outpu
                     bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
                 }
 
-                uint8_t delta_green = (uint8_t)le_decode(codec, &green);
-                uint8_t delta_red = (uint8_t)le_decode(codec, &red);
-                uint8_t delta_blue = (uint8_t)le_decode(codec, &blue);
+                int delta_green = le_decode_delta(codec, &green);
+                int delta_red = le_decode_delta(codec, &red);
+                int delta_blue = le_decode_delta(codec, &blue);
 
                 // red and blue delta are based on green delta
-                int dgreen_orig = (int)delta_green - 64;
-                int current_green_value = reference_green + dgreen_orig;
-                int dgreen_halved = dgreen_orig / 2;
+                int current_green_value = reference_green + delta_green;
+                int dgreen_halved = delta_green / 2;
 
-                int dred_orig = ((int)delta_red - 64) + dgreen_halved;
-                int dblue_orig = ((int)delta_blue - 64) + dgreen_halved;
+                int dred_orig = delta_red + dgreen_halved;
+                int dblue_orig = delta_blue + dgreen_halved;
 
                 int current_red_value = reference_red + dred_orig;
                 int current_blue_value = reference_blue + dblue_orig;
