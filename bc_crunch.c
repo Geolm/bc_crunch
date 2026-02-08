@@ -87,8 +87,7 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 #endif
 
 
-#define LE_MODEL_MAX_HOT (36)
-#define LE_HISTOGRAM_SIZE (256)
+#define LE_ALPHABET_SIZE (256)
 
 enum le_mode
 {
@@ -112,22 +111,10 @@ typedef struct le_stream
 
 typedef struct le_model
 {
-    uint8_t hot_values[LE_MODEL_MAX_HOT];
-    uint16_t decode_table[1<<10];
-
-#ifdef LE_STATS
-    uint32_t num_hot_tier0;
-    uint32_t num_hot_tier1;
-    uint32_t num_hot_tier2;
-    uint32_t num_raw;
-#endif
+    uint8_t alphabet[LE_ALPHABET_SIZE];
+    uint8_t k;  // rice k-value
+    int8_t k_trend;
 } le_model;
-
-typedef struct le_histogram
-{
-    uint32_t count[LE_HISTOGRAM_SIZE];
-    uint32_t num_symbols;
-} le_histogram;
 
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_refill(le_stream* s)
@@ -156,6 +143,7 @@ static inline void le_flush(le_stream* s)
     }
 }
 
+// ----------------------------------------------------------------------------------------------------------------------------
 static inline void le_init(le_stream *s, void* buffer, size_t size)
 {
 #ifdef LE_CHECKS
@@ -222,23 +210,24 @@ static inline void le_end_decode(le_stream* s)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_write_dibit(le_stream* s, uint8_t dibit)
+static inline void le_write_bits(le_stream* s, uint8_t data, uint8_t num_bits)
 {
-    s->bit_reservoir |= ((uint64_t)(dibit & 0x03) << s->bits_available);
-    s->bits_available += 2;
+    s->bit_reservoir |= (uint64_t)(data & ((1 << num_bits) - 1)) << s->bits_available;
+    s->bits_available += num_bits;
     if (s->bits_available >= 32)
         le_flush(s);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_write_nibble(le_stream* s, uint8_t nibble)
+static inline uint8_t le_read_bits(le_stream* s, uint8_t num_bits)
 {
-    s->bit_reservoir |= ((uint64_t)(nibble & 0x0F) << s->bits_available);
-    s->bits_available += 4;
-    if (s->bits_available >= 32)
-    {
-        le_flush(s);
-    }
+    if (s->bits_available < num_bits)
+        le_refill(s);
+
+    uint8_t value = (uint8_t)(s->bit_reservoir & ((1U<<num_bits)-1U));
+    s->bit_reservoir >>= num_bits;
+    s->bits_available -= num_bits;
+    return value;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -248,18 +237,6 @@ static inline void le_write_byte(le_stream* s, uint8_t value)
     s->bits_available += 8;
     if (s->bits_available >= 32)
         le_flush(s);
-}
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t le_read_nibble(le_stream* s)
-{
-    if (s->bits_available < 4)
-        le_refill(s);
-
-    uint8_t value = (uint8_t)(s->bit_reservoir & 0x0F);
-    s->bit_reservoir >>= 4;
-    s->bits_available -= 4;
-    return value;
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -274,71 +251,52 @@ static inline uint8_t le_read_byte(le_stream* s)
     return value;
 }
 
-//----------------------------------------------------------------------------------------------------------------------------
-static inline void histogram_init(le_histogram* h, uint32_t num_symbols)
-{
-#ifdef LE_CHECKS
-    assert(num_symbols > 3 && num_symbols <= 256);
-#endif
-
-    h->num_symbols = num_symbols;
-    for(uint32_t i=0; i<num_symbols; ++i)
-        h->count[i] = 0;
-}
-
-#define CONTROL_HOT_TIER0 (0)
-#define CONTROL_HOT_TIER1 (1)
-#define CONTROL_HOT_TIER2 (2)
-#define CONTROL_ESCAPE (3)
 
 // ----------------------------------------------------------------------------------------------------------------------------
-void le_model_init(le_model *model, const uint32_t *histogram, uint32_t num_symbols)
+void le_model_init(le_model *model)
 {
-    memset(model->hot_values, 0, sizeof(model->hot_values));
+    for(uint32_t i=0; i<LE_ALPHABET_SIZE; ++i)
+        model->alphabet[i] = i;
+    model->k = 2;
+    model->k_trend = 0;
+}
 
-#ifdef LE_STATS
-    model->num_hot_tier0 = 0;
-    model->num_hot_tier1 = 0;
-    model->num_hot_tier2 = 0;
-    model->num_raw = 0;
-#endif
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k) 
+{
+    uint32_t q = value >> k;
+    uint32_t r = value & ((1U << k) - 1U);
 
-    uint32_t selected[LE_MODEL_MAX_HOT];
-    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
-        selected[i] = UINT32_MAX;
+    // write q
+    for (uint32_t i = 0; i < q; ++i)
+        le_write_bits(s, 1, 1);
+    
+    // terminator '0'
+    le_write_bits(s, 0, 1);
 
-    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
+    // remainder
+    if (k > 0) 
+        le_write_bits(s, (uint8_t)r, k);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline void le_model_update(le_model* model, uint8_t value)
+{
+    if (value < (1U << model->k) && model->k > 0) 
+        model->k_trend--;
+    else if (value > (3U << model->k) && model->k < 6) 
+        model->k_trend++;
+
+    // soft adaptation
+    if (model->k_trend > 4)
     {
-        uint32_t max_count = 0;
-        uint32_t max_index = UINT32_MAX;
-
-        for (uint32_t s = 0; s < num_symbols; s++)
-        {
-            bool already = false;
-            for (uint32_t j = 0; j < i; j++)
-            {
-                if (selected[j] == s) 
-                { 
-                    already = true; 
-                    break; 
-                }
-            }
-
-            if (already) 
-                continue;
-
-            if (histogram[s] > max_count)
-            {
-                max_count = histogram[s];
-                max_index = s;
-            }
-        }
-
-        if (max_index == UINT32_MAX || max_count == 0)
-            break;
-
-        model->hot_values[i] = (uint8_t)max_index;
-        selected[i] = max_index;
+        model->k++;
+        model->k_trend = 0;
+    }
+    else if (model->k_trend < -4)
+    {
+        model->k--;
+        model->k_trend = 0;
     }
 }
 
@@ -349,187 +307,154 @@ static inline void le_encode(le_stream *s, le_model *model, uint8_t value)
     assert(s->mode == le_mode_encode);
 #endif
 
-    // hot values
-    for (uint32_t i = 0; i < LE_MODEL_MAX_HOT; i++)
+    uint32_t index = 0;
+    for (; index < 256; index++)
+        if (model->alphabet[index] == value)
+            break;
+
+    rice_encode(s, index, model->k);
+
+    // move up this value in the alphabet
+    if (index > 0) 
     {
-        if (model->hot_values[i] == value)
+        uint8_t temp = model->alphabet[index];
+        uint32_t target_index = index / 2;  // lowpass filter, prevent jittering
+
+        for (uint32_t i = index; i > target_index; i--)
+            model->alphabet[i] = model->alphabet[i - 1];
+        
+        model->alphabet[target_index] = temp;
+    }
+
+    le_model_update(model, index);
+}
+
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
+{
+        uint32_t q = 0;
+    while (true) 
+    {
+        if (s->bits_available == 0) 
+            le_refill(s);
+        
+        if ((s->bit_reservoir & 1ULL) != 0) 
         {
-            if (i<4)
-            {
-                le_write_dibit(s, CONTROL_HOT_TIER0);
-                le_write_dibit(s, i);
-
-            #ifdef LE_STATS
-                model->num_hot_tier0++;
-            #endif
-            }
-            else if (i<20)
-            {
-                le_write_dibit(s, CONTROL_HOT_TIER1);
-                le_write_nibble(s, i-4);
-
-            #ifdef LE_STATS
-                model->num_hot_tier1++;
-            #endif
-            }
-            else
-            {
-                le_write_dibit(s, CONTROL_HOT_TIER2);
-                le_write_nibble(s, i-20);
-
-            #ifdef LE_STATS
-                model->num_hot_tier2++;
-            #endif
-            }
-            return;
+            q++;
+            s->bit_reservoir >>= 1;
+            s->bits_available--;
+        } else 
+        {
+            s->bit_reservoir >>= 1; 
+            s->bits_available--;
+            break;
         }
     }
 
-    // or escape code
-    le_write_dibit(s, CONTROL_ESCAPE);
-    le_write_byte(s, value);
+    if (s->bits_available < k)
+        le_refill(s);
+    
+    uint32_t r = 0;
+    if (k > 0) 
+    {
+        r = (uint32_t)(s->bit_reservoir & ((1ULL << k) - 1U));
+        s->bit_reservoir >>= k;
+        s->bits_available -= k;
+    }
 
-#ifdef LE_STATS
-    model->num_raw++;
-#endif
+    return (uint8_t) ((q << k) | r);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t le_decode(le_stream *restrict s, const le_model *restrict model) 
+static inline uint8_t le_decode(le_stream *restrict s, le_model *restrict model) 
 {
-    if (s->bits_available < 16)
-        le_refill(s);
+#ifdef LE_CHECKS
+    assert(index < LE_ALPHABET_SIZE);
+#endif
 
-    uint32_t entry = model->decode_table[s->bit_reservoir & 0x3FF];
-    uint32_t length = entry >> 8;
-    uint8_t  value  = (uint8_t)entry;
+    uint8_t index = rice_decode(s, model->k);
+    uint8_t value = model->alphabet[index];
 
-    // 4. Consume the bits used
-    s->bit_reservoir >>= length;
-    s->bits_available -= length;
+     // move up this value in the alphabet
+    if (index > 0) 
+    {
+        uint8_t temp = model->alphabet[index];
+        uint32_t target_index = index / 2;  // lowpass filter, prevent jittering
+
+        for (uint32_t i = index; i > target_index; i--)
+            model->alphabet[i] = model->alphabet[i - 1];
+        
+        model->alphabet[target_index] = temp;
+    }
+
+    le_model_update(model, index);
 
     return value;
 }
 
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline void le_model_save(le_stream *s, const le_model *model)
-{
-    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
-        le_write_byte(s, model->hot_values[i]);
-}
+// // ----------------------------------------------------------------------------------------------------------------------------
+// static inline uint8_t zigzag8_encode(int8_t v)
+// {
+//     return (uint8_t)((v << 1) ^ (v >> 7));
+// }
 
-// ----------------------------------------------------------------------------------------------------------------------------
-void le_model_load(le_stream *s, le_model *model)
-{
-    for(uint32_t i=0; i<LE_MODEL_MAX_HOT; ++i)
-        model->hot_values[i] = le_read_byte(s);
+// // ----------------------------------------------------------------------------------------------------------------------------
+// static inline int8_t zigzag8_decode(uint8_t v)
+// {
+//     return (int8_t)((v >> 1) ^ -(int8_t)(v & 1));
+// }
 
-    // now generate the decode table
-    for (uint32_t i = 0; i < 1024; i++)
-    {
-        uint32_t control = i & 0x03;
+// // ----------------------------------------------------------------------------------------------------------------------------
+// static inline void le_encode_delta(le_stream *s, int8_t delta)
+// {
+//     uint8_t zz = zigzag8_encode(delta);
 
-        if (control == CONTROL_HOT_TIER0)
-        {
-            uint32_t index = (i >> 2) & 0x03;
-            model->decode_table[i] = (4<<8) | (model->hot_values[index]);
-        }
-        else if (control == CONTROL_HOT_TIER1)
-        {
-            uint32_t index = ((i >> 2) & 0xf) + 4;
-            model->decode_table[i] = (6<<8) | (model->hot_values[index]);
-        }
-        else if (control == CONTROL_HOT_TIER2)
-        {
-            uint32_t index = ((i >> 2) & 0xf) + 20;
-            model->decode_table[i] = (6<<8) | (model->hot_values[index]);
-        }
-        else
-        {
-            uint32_t value = (i >> 2) & 0xFF;
-            model->decode_table[i] = (10<<8) | value;
-        }
-    }
-}
+//     // hardcoded k=2
+//     if (zz < 20)
+//     {
+//         le_write_bits(s, 0, 1);
+//         rice_encode(s, zz, 2);
+//     }
+//     else
+//     {
+//         le_write_bits(s, 1, 1);
+//         le_write_byte(s, (uint8_t)delta);
+//     }
+// }
 
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t zigzag8_encode(int8_t v)
-{
-    return (uint8_t)((v << 1) ^ (v >> 7));
-}
+// // ----------------------------------------------------------------------------------------------------------------------------
+// static inline int8_t le_decode_delta(le_stream* s)
+// {
+//     if (s->bits_available < 16) le_refill(s);
 
-// ----------------------------------------------------------------------------------------------------------------------------
-// Dibit-delta encoding model, specialized in small delta, use a good predictor up-front to maximize compression
-//
-// Use dibit to encode delta. 
-//      (0, -1, 1)      use 2 bits
-//      (-2, +2, -3)    use 4 bits
-//      (+3, -4, +4)    use 6 bits
-//      (-5, +5, -6)    use 8 bits
-//      anything greater use 16 bits
-static inline void le_encode_delta(le_stream *s, int8_t delta)
-{
-    uint8_t zz = zigzag8_encode(delta);
+//     uint32_t flag = (uint32_t)(s->bit_reservoir & 1U);
+//     s->bit_reservoir >>= 1;
+//     s->bits_available -= 1;
 
-    for(uint32_t i = 0; i < 4; i++)
-    {
-        if(zz < 3)
-        {
-            le_write_dibit(s, zz);
-            return;
-        }
+//     // escape
+//     if (flag == 1)
+//     {
+//         uint8_t raw_val = (uint8_t)(s->bit_reservoir & 0xFFU);
+//         s->bit_reservoir >>= 8;
+//         s->bits_available -= 8;
+//         return (int8_t)raw_val;
+//     }
 
-        le_write_dibit(s, 3); // escape
-        zz -= 3;
-    }
+//     uint32_t q = 0;
+//     while ((s->bit_reservoir & (1ULL << q)) != 0) 
+//         q++;
+    
+//     s->bit_reservoir >>= (q + 1);
+//     s->bits_available -= (q + 1);
 
-    le_write_byte(s, (uint8_t)(delta));
-}
+//     uint32_t r = (uint32_t)(s->bit_reservoir & 3U); // k=2, so mask 0b11
+//     s->bit_reservoir >>= 2;
+//     s->bits_available -= 2;
 
-
-static const uint16_t le_delta_table[256] = 
-{
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0603,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x06fc,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0604,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x08fb,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0603,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x06fc,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0604,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0805,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0603,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x06fc,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0604,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x08fa,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0603,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x06fc,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x0604,
-    0x0200, 0x02ff, 0x0201, 0x04fe, 0x0200, 0x02ff, 0x0201, 0x0402, 0x0200, 0x02ff, 0x0201, 0x04fd, 0x0200, 0x02ff, 0x0201, 0x1000
-};
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline int8_t le_decode_delta(le_stream* s)
-{
-     if (s->bits_available < 16) 
-         le_refill(s);
-
-    uint32_t entry = le_delta_table[s->bit_reservoir & 0xFF];
-    uint32_t length = entry >> 8;
-
-    if (length <= 8) 
-    {
-        s->bit_reservoir >>= length;
-        s->bits_available -= length;
-        return (int8_t)(entry & 0xFF);
-    } 
-    else 
-    {
-        int8_t delta = (int8_t)(s->bit_reservoir >> 8);
-        s->bit_reservoir >>= 16;
-        s->bits_available -= 16;
-        return delta;
-    }
-}
+//     uint32_t zz = (q << 2) | r;
+//     return zigzag8_decode((uint8_t)zz);
+// }
 
 //----------------------------------------------------------------------------------------------------------------------------
 typedef struct bc1_block
@@ -568,8 +493,8 @@ typedef struct entry
 static inline const void* get_block(const void *base, size_t elem_size, uint32_t width_blocks, uint32_t x, uint32_t y)
 {
     size_t row_index = (size_t)y * width_blocks;
-    size_t idx = row_index + x;
-    return (const uint8_t *)base + idx * elem_size;
+    size_t index = row_index + x;
+    return (const uint8_t *)base + index * elem_size;
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
@@ -949,7 +874,7 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
 // }
 
 //----------------------------------------------------------------------------------------------------------------------------
-// static inline range_model* bc4_select_model(const bc4_block* b, range_model* indices)
+// static inline le_model* bc4_select_model(const bc4_block* b, le_model* indices)
 // {
 //     int endpoints_delta = int_abs(b->color[0] - b->color[1]);
 
@@ -962,6 +887,9 @@ void build_top_table(entry* hashmap, const void* input, size_t stride, uint32_t 
 // }
 
 // static const uint32_t block_zigzag[16] = {0,  1,  2,  3, 7,  6,  5,  4, 8,  9, 10, 11, 15, 14, 13, 12};
+
+//----------------------------------------------------------------------------------------------------------------------
+static inline int int_abs(int a) {return (a>=0) ? a : -a;}
 
 //----------------------------------------------------------------------------------------------------------------------------
 // as we use a static huffman entropy encoder to be the fastest at decompression, we need two passes :
@@ -983,72 +911,13 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
     uint32_t top_table_size;
     build_top_table(hashmap, input, stride, height_blocks*width_blocks, top_table, &top_table_size);
 
-    // ----------
-    // FIRST PASS
-    // ----------
-    le_histogram htable_index, hmask, htable_difference;
-    histogram_init(&htable_index, 256);
-    histogram_init(&hmask, 16);
-    histogram_init(&htable_difference, 256);
+    // write the table
+    le_model table_entry;
+    le_model_init(&table_entry);
 
-    le_histogram htable_entry;
-    histogram_init(&htable_entry, 256);
-
-    for(uint32_t i=1; i<top_table_size; ++i)
-    {
-        // table is sorted from small to big, so diff is always positive
-        uint32_t diff = top_table[i] - top_table[i-1];
-
-        for(uint32_t j=0; j<4; ++j)
-            htable_entry.count[(diff >> (j*8)) & 0xff]++;
-    }
-
-    bc1_block previous = {0};
-    for(uint32_t y = 0; y < height_blocks; ++y)
-    {
-        for(uint32_t x = 0; x < width_blocks; ++x)
-        {
-            uint32_t zigzag_x = (y&1) ? x : width_blocks - x - 1;
-            const bc1_block* current = get_block(input, stride, width_blocks, zigzag_x, y);
-
-            uint32_t reference = nearest32(top_table, top_table_size, current->indices) & 0xffff;
-
-            assert(reference < 256);
-            htable_index.count[reference]++;
-
-            uint32_t difference = current->indices ^ top_table[reference];
-
-            uint32_t mask = 0;
-            if ((difference & 0x000000FF) != 0) mask |= 1;
-            if ((difference & 0x0000FF00) != 0) mask |= 2;
-            if ((difference & 0x00FF0000) != 0) mask |= 4;
-            if ((difference & 0xFF000000) != 0) mask |= 8;
-
-            hmask.count[mask]++;
-
-            for(uint32_t j=0; j<4; ++j)
-                if (mask & (1u << j))
-                    htable_difference.count[(difference >> (j*8)) & 0xff]++;
-
-            previous = *current;
-        }
-    }
-
-    le_model table_index, diff_mask, table_entry, table_difference;
-    le_model_init(&table_index, htable_index.count, htable_index.num_symbols);
-    le_model_init(&diff_mask, hmask.count, hmask.num_symbols);
-    le_model_init(&table_entry, htable_entry.count, htable_entry.num_symbols);
-    le_model_init(&table_difference, htable_difference.count, htable_difference.num_symbols);
-
-    le_model_save(codec, &table_index);
-    le_model_save(codec, &diff_mask);
-    le_model_save(codec, &table_entry);
-    le_model_save(codec, &table_difference);
-
-    // write the top-table
-    le_write_byte(codec, top_table_size-1);
+    le_write_byte(codec, top_table_size-1);   // entries count
     for(uint32_t j=0; j<4; ++j)
-        le_write_byte(codec, (top_table[0] >> (j*8)) & 0xff);    // first entry not compressed
+        le_write_bits(codec, (top_table[0] >> (j*8)) & 0xff, 8);    // first entry not compressed
 
     for(uint32_t i=1; i<top_table_size; ++i)
     {
@@ -1059,11 +928,19 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
             le_encode(codec, &table_entry, (diff >> (j*8)) & 0xff);
     }
 
-    // ----------
-    // SECOND PASS
-    // ----------
+    le_model red, green, blue;
+    le_model_init(&red);
+    le_model_init(&green);
+    le_model_init(&blue);
 
-    previous = (bc1_block) {0};
+    le_model table_index, table_difference, diff_mask, color_reference;
+    le_model_init(&table_index);
+    le_model_init(&table_difference);
+    le_model_init(&diff_mask);
+    le_model_init(&color_reference);
+
+    bc1_block previous = {0};
+
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
@@ -1085,15 +962,17 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
                     uint8_t up_red, up_green, up_blue;
                     bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
 
-                    if (y>0 && x!=0)
-                    {
-                        const bc1_block* up = get_block(input, stride, width_blocks, zigzag_x, y-1);
-                        uint8_t up_red, up_green, up_blue;
-                        bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
+                    int previous_delta = int_abs(current_red - previous_red) + int_abs(current_green-previous_green) + int_abs(current_blue-previous_blue);
+                    int up_delta = int_abs(current_red-up_red) + int_abs(current_green-up_green) + int_abs(current_blue-up_blue);
 
-                        previous_red = (previous_red + up_red) / 2;
-                        previous_green = (previous_green + up_green) / 2;
-                        previous_blue = (previous_blue + up_blue) / 2;
+                    le_write_bits(codec, (up_delta < previous_delta) ? 1 : 0, 1);
+
+                    // overwrite previous value to avoid using a new set of variables
+                    if (up_delta < previous_delta)
+                    {
+                        previous_red = up_red;
+                        previous_green = up_green;
+                        previous_blue = up_blue;
                     }
                 }
 
@@ -1102,7 +981,7 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
                 int dblue = current_blue - previous_blue;
 
                 // first encode green delta
-                le_encode_delta(codec, (int8_t) dgreen);
+                le_encode(codec, &green, (uint8_t) (dgreen + 64));
 
                 // then encode red and blue delta based on green delta
                 // assuming some relation between green and other components
@@ -1110,8 +989,8 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
                 dred -= dgreen;
                 dblue -= dgreen;
 
-                le_encode_delta(codec, (int8_t) (dred));
-                le_encode_delta(codec, (int8_t) (dblue));
+                le_encode(codec, &red, (uint8_t) (dred + 64));
+                le_encode(codec, &blue, (uint8_t) (dblue + 64));
             }
 
             // for indices, we store the reference to "nearest" indices (can be exactly the same)
@@ -1128,7 +1007,7 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
             if ((difference & 0x00FF0000) != 0) mask |= 4;
             if ((difference & 0xFF000000) != 0) mask |= 8;
 
-            le_write_nibble(codec, mask);
+            le_encode(codec, &diff_mask, mask);
 
             // only encode the bytes that are actually non-zero
             for(uint32_t j=0; j<4; ++j)
@@ -1138,28 +1017,23 @@ void bc1_crunch(le_stream* restrict codec, void* restrict cruncher_memory, const
             previous = *current;
         }
     }
-
-    // printf("hmask histogram\n");
-
-    // for(uint32_t i=0; i<16; ++i)
-    //     printf("h[%u] = %u\t", i, hmask.count[i]);
-    
-    // printf("\n");
 }
 
 //----------------------------------------------------------------------------------------------------------------------------
-void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, void* restrict output, size_t stride)
+void bc1_decrunch(le_stream* codec, uint32_t width, uint32_t height, void* output, size_t stride)
 {
     assert((width % 4 == 0) && (height % 4 == 0));
 
     uint32_t height_blocks = height/4;
     uint32_t width_blocks = width/4;
-    
-    le_model table_index, diff_mask, table_entry, table_difference;
-    le_model_load(codec, &table_index);
-    le_model_load(codec, &diff_mask);
-    le_model_load(codec, &table_entry);
-    le_model_load(codec, &table_difference);
+
+    le_model red, green, blue;
+    le_model_init(&red);
+    le_model_init(&green);
+    le_model_init(&blue);
+
+    le_model table_entry;
+    le_model_init(&table_entry);
 
     uint32_t top_table[TABLE_SIZE];
     uint32_t top_table_size = le_read_byte(codec)+1;
@@ -1177,7 +1051,13 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
         top_table[i] = top_table[i-1] + diff;
     }
 
+    le_model table_index, table_difference, diff_mask;
+    le_model_init(&table_index);
+    le_model_init(&table_difference);
+    le_model_init(&diff_mask);
+
     bc1_block previous = {0};
+
     for(uint32_t y = 0; y < height_blocks; ++y)
     {
         for(uint32_t x = 0; x < width_blocks; ++x)
@@ -1189,29 +1069,23 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
             {
                 uint8_t reference_red, reference_green, reference_blue;
                 bc1_extract_565(previous.color[j], &reference_red, &reference_green, &reference_blue);
-
-                if (y>0 && x!=0)
+                if (y>0 && x!=0 && le_read_bits(codec, 1) == 1)
                 {
-                    const bc1_block* up = get_block(output, stride, width_blocks, zigzag_x, y-1);
-                    uint8_t up_red, up_green, up_blue;
-                    bc1_extract_565(up->color[j], &up_red, &up_green, &up_blue);
-
-                    reference_red = (reference_red + up_red) / 2;
-                    reference_green = (reference_green + up_green) / 2;
-                    reference_blue = (reference_blue + up_blue) / 2;
+                    bc1_block* up = (bc1_block*) get_block(output, stride, width_blocks, zigzag_x, y-1);
+                    bc1_extract_565(up->color[j], &reference_red, &reference_green, &reference_blue);
                 }
 
-                int8_t delta_green = le_decode_delta(codec);
-                int8_t delta_red = le_decode_delta(codec);
-                int8_t delta_blue = le_decode_delta(codec);
+                uint8_t delta_green = (uint8_t)le_decode(codec, &green);
+                uint8_t delta_red = (uint8_t)le_decode(codec, &red);
+                uint8_t delta_blue = (uint8_t)le_decode(codec, &blue);
 
                 // red and blue delta are based on green delta
-                int dgreen_orig = delta_green;
+                int dgreen_orig = (int)delta_green - 64;
                 int current_green_value = reference_green + dgreen_orig;
                 int dgreen_halved = dgreen_orig / 2;
 
-                int dred_orig = delta_red + dgreen_halved;
-                int dblue_orig = delta_blue + dgreen_halved;
+                int dred_orig = ((int)delta_red - 64) + dgreen_halved;
+                int dblue_orig = ((int)delta_blue - 64) + dgreen_halved;
 
                 int current_red_value = reference_red + dred_orig;
                 int current_blue_value = reference_blue + dblue_orig;
@@ -1221,7 +1095,7 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 
             // indices difference with top table
             uint32_t reference = le_decode(codec, &table_index);
-            uint32_t mask = le_read_nibble(codec);
+            uint32_t mask = le_decode(codec, &diff_mask);
 
             uint32_t difference=0;
             for(uint32_t j=0; j<4; ++j)
@@ -1244,23 +1118,23 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 //     uint32_t height_blocks = height/4;
 //     uint32_t width_blocks = width/4;
 
-//     range_model color_delta[2];
-//     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
-//     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
+//     le_model color_delta[2];
+//     le_model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
+//     le_model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-//     range_model color_reference, first_index, use_dict, dict_reference; 
-//     model_init(&color_reference, 2);
-//     model_init(&first_index, 1<<3);
-//     model_init(&use_dict, 2);
-//     model_init(&dict_reference, DICTIONARY_SIZE);
+//     le_model color_reference, first_index, use_dict, dict_reference; 
+//     le_model_init(&color_reference, 2);
+//     le_model_init(&first_index, 1<<3);
+//     le_model_init(&use_dict, 2);
+//     le_model_init(&dict_reference, DICTIONARY_SIZE);
 
-//     range_model indices[24];
+//     le_model indices[24];
 //     for(uint32_t i=0; i<24; ++i)
-//         model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
+//         le_model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
 
-//     range_model dict_delta[16];
+//     le_model dict_delta[16];
 //     for(uint32_t i=0; i<16; ++i)
-//         model_init(&dict_delta[i], 1<<3);
+//         le_model_init(&dict_delta[i], 1<<3);
 
 //     bc4_block previous = {.color = {0, 128}};
 
@@ -1291,8 +1165,8 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 //             if (reference < 0) reference = 0;
 //             if (reference > 255) reference = 255;
 
-//             enc_put(codec, &color_delta[0], delta_encode_wrap((uint8_t)reference, current->color[0]));
-//             enc_put(codec, &color_delta[1], delta_encode_wrap(current->color[0], current->color[1]));
+//             le_encode(codec, &color_delta[0], delta_encode_wrap((uint8_t)reference, current->color[0]));
+//             le_encode(codec, &color_delta[1], delta_encode_wrap(current->color[0], current->color[1]));
 
 //             // search in the dictionary for the current bitfield
 //             uint64_t bitfield = MAKE48(current->indices[0], current->indices[1], current->indices[2]);
@@ -1303,13 +1177,13 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 //             // found or similar? just write the dictionary index
 //             if (score < 5 && ((y*width_blocks) + x > 32))
 //             {
-//                 enc_put(codec, &use_dict, 1);
-//                 enc_put(codec, &dict_reference, found_index);
+//                 le_encode(codec, &use_dict, 1);
+//                 le_encode(codec, &dict_reference, found_index);
                 
 //                 uint64_t reference = dictionary[found_index];
 //                 uint64_t bitfield_delta = reference ^ bitfield;
 //                 for(uint32_t j=0; j<16; ++j)
-//                     enc_put(codec, &dict_delta[j], (bitfield_delta>>(j*3))&0x7);
+//                     le_encode(codec, &dict_delta[j], (bitfield_delta>>(j*3))&0x7);
 
 //                 if(found_index > 0)
 //                 {
@@ -1327,16 +1201,16 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 //                 dictionary[middle] = bitfield;
 
 //                 // write the indices with local difference delta encoded
-//                 enc_put(codec, &use_dict, 0);
+//                 le_encode(codec, &use_dict, 0);
 
 //                 uint8_t block_previous = bc4_get_index(current, 0);
-//                 enc_put(codec, &first_index, block_previous);
+//                 le_encode(codec, &first_index, block_previous);
 
-//                 range_model* model = bc4_select_model(current, indices);
+//                 le_model* model = bc4_select_model(current, indices);
 //                 for(uint32_t j=1; j<16; ++j)
 //                 {
 //                     uint8_t data = bc4_get_index(current, block_zigzag[j]);
-//                     enc_put(codec, &model[block_previous], block_previous ^ data);
+//                     le_encode(codec, &model[block_previous], block_previous ^ data);
 //                     block_previous = data;
 //                 }
 //             }
@@ -1353,23 +1227,23 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 //     uint32_t height_blocks = height/4;
 //     uint32_t width_blocks = width/4;
 
-//     range_model color_delta[2];
-//     model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
-//     model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
+//     le_model color_delta[2];
+//     le_model_init(&color_delta[0], 1<<BC4_COLOR_NUM_BITS);
+//     le_model_init(&color_delta[1], 1<<BC4_COLOR_NUM_BITS);
 
-//     range_model color_reference, first_index, use_dict, dict_reference;
-//     model_init(&color_reference, 2);
-//     model_init(&first_index, 1<<3);
-//     model_init(&use_dict, 2);
-//     model_init(&dict_reference, DICTIONARY_SIZE);
+//     le_model color_reference, first_index, use_dict, dict_reference;
+//     le_model_init(&color_reference, 2);
+//     le_model_init(&first_index, 1<<3);
+//     le_model_init(&use_dict, 2);
+//     le_model_init(&dict_reference, DICTIONARY_SIZE);
 
-//     range_model indices[24];
+//     le_model indices[24];
 //     for(uint32_t i=0; i<24; ++i)
-//         model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
+//         le_model_init(&indices[i], 1<<BC4_INDEX_NUM_BITS);
 
-//     range_model dict_delta[16];
+//     le_model dict_delta[16];
 //     for(uint32_t i=0; i<16; ++i)
-//         model_init(&dict_delta[i], 1<<3);
+//         le_model_init(&dict_delta[i], 1<<3);
 
 //     bc4_block previous = {.color = {0, 128}};
 
@@ -1399,19 +1273,19 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 //             if (reference < 0) reference = 0;
 //             if (reference > 255) reference = 255;
 
-//             current->color[0] = delta_decode_wrap((uint8_t)reference, dec_get(codec, &color_delta[0]));
-//             current->color[1] = delta_decode_wrap(current->color[0], dec_get(codec, &color_delta[1]));
+//             current->color[0] = delta_decode_wrap((uint8_t)reference, le_decode(codec, &color_delta[0]));
+//             current->color[1] = delta_decode_wrap(current->color[0], le_decode(codec, &color_delta[1]));
 
-//             if (dec_get(codec, &use_dict))
+//             if (le_decode(codec, &use_dict))
 //             {
 //                 // data should be in the dictionary
-//                 uint32_t found_index = dec_get(codec, &dict_reference);
+//                 uint32_t found_index = le_decode(codec, &dict_reference);
 //                 uint64_t reference = dictionary[found_index];
 //                 uint64_t bitfield = 0;
     
 //                 for(uint32_t j=0; j<16; ++j)
 //                 {
-//                     uint64_t byte = (uint64_t)dec_get(codec, &dict_delta[j]);
+//                     uint64_t byte = (uint64_t)le_decode(codec, &dict_delta[j]);
 //                     bitfield |= (byte << (j*3));
 //                 }
 
@@ -1430,13 +1304,13 @@ void bc1_decrunch(le_stream* restrict codec, uint32_t width, uint32_t height, vo
 //             }
 //             else
 //             {
-//                 uint8_t block_previous = dec_get(codec, &first_index);
+//                 uint8_t block_previous = le_decode(codec, &first_index);
 //                 bc4_set_index(current, 0, block_previous);
 
-//                 range_model* model = bc4_select_model(current, indices);
+//                 le_model* model = bc4_select_model(current, indices);
 //                 for(uint32_t j=1; j<16; ++j)
 //                 {
-//                     uint8_t delta = dec_get(codec, &model[block_previous]);
+//                     uint8_t delta = le_decode(codec, &model[block_previous]);
 //                     uint8_t data = block_previous ^ delta;
 //                     bc4_set_index(current, block_zigzag[j], data);
 //                     block_previous = data;
