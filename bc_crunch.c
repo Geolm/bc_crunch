@@ -89,6 +89,9 @@ Copyright (c) 2004 by Amir Said (said@ieee.org) &
 
 #define LE_ALPHABET_SIZE (256)
 #define LE_K_TREND_THRESHOLD (12)
+#define LE_Q_ESCAPE_SIZE (10)
+
+static const uint8_t q_escape_for_k[LE_Q_ESCAPE_SIZE] = {16, 10, 4, 6, 255, 255, 255, 255, 255, 255};
 
 enum le_mode
 {
@@ -265,8 +268,16 @@ void le_model_init(le_model *model)
 // ----------------------------------------------------------------------------------------------------------------------------
 static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k) 
 {
+#ifdef LE_CHECKS
+    assert(k < LE_Q_ESCAPE_SIZE);
+#endif
+
     uint32_t q = value >> k;
+    uint32_t q_limit = q_escape_for_k[k];
     uint32_t r = value & ((1U << k) - 1U);
+
+    // checks if raw value is cheaper
+    q = (q >= q_limit) ? q_limit : q;
 
     // write q
     for (uint32_t i = 0; i < q; ++i)
@@ -275,9 +286,53 @@ static inline void rice_encode(le_stream *s, uint32_t value, uint8_t k)
     // terminator '0'
     le_write_bits(s, 0, 1);
 
-    // remainder
-    if (k > 0) 
+    // remainder or rawbyte
+    if (q == q_limit)
+        le_write_byte(s, value);
+    else if (k > 0) 
         le_write_bits(s, (uint8_t)r, k);
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------
+static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
+{
+    uint32_t q = 0;
+    uint32_t q_limit = q_escape_for_k[k];
+
+    while (true) 
+    {
+        if (s->bits_available == 0) 
+            le_refill(s);
+        
+        if ((s->bit_reservoir & 1ULL) != 0) 
+        {
+            q++;
+            s->bit_reservoir >>= 1;
+            s->bits_available--;
+        } 
+        else 
+        {
+            s->bit_reservoir >>= 1; 
+            s->bits_available--;
+            break;
+        }
+    }
+
+    if (q == q_limit)
+        return le_read_byte(s);
+
+    if (s->bits_available < k)
+        le_refill(s);
+    
+    uint32_t r = 0;
+    if (k > 0) 
+    {
+        r = (uint32_t)(s->bit_reservoir & ((1ULL << k) - 1U));
+        s->bit_reservoir >>= k;
+        s->bits_available -= k;
+    }
+
+    return (uint8_t) ((q << k) | r);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
@@ -285,7 +340,7 @@ static inline void le_model_update(le_model* model, uint8_t value)
 {
     if (value < (1U << model->k) && model->k > 0) 
         model->k_trend--;
-    else if (value > (3U << model->k) && model->k < 6) 
+    else if (value > (3U << model->k) && model->k < 7) 
         model->k_trend++;
 
     // soft adaptation
@@ -328,43 +383,6 @@ static inline void le_encode_symbol(le_stream *s, le_model *model, uint8_t value
     }
 
     le_model_update(model, index);
-}
-
-
-// ----------------------------------------------------------------------------------------------------------------------------
-static inline uint8_t rice_decode(le_stream *s, uint8_t k) 
-{
-        uint32_t q = 0;
-    while (true) 
-    {
-        if (s->bits_available == 0) 
-            le_refill(s);
-        
-        if ((s->bit_reservoir & 1ULL) != 0) 
-        {
-            q++;
-            s->bit_reservoir >>= 1;
-            s->bits_available--;
-        } else 
-        {
-            s->bit_reservoir >>= 1; 
-            s->bits_available--;
-            break;
-        }
-    }
-
-    if (s->bits_available < k)
-        le_refill(s);
-    
-    uint32_t r = 0;
-    if (k > 0) 
-    {
-        r = (uint32_t)(s->bit_reservoir & ((1ULL << k) - 1U));
-        s->bit_reservoir >>= k;
-        s->bits_available -= k;
-    }
-
-    return (uint8_t) ((q << k) | r);
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------
