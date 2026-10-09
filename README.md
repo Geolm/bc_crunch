@@ -1,3 +1,25 @@
+
+# Project Archived — Use bc_packed Instead
+
+This project has been superseded by [**bc_packed**](https://github.com/Geolm/bc_packed), a new GPU-accelerated implementation offering a massive improvement in decompression performance.
+
+| Implementation              | Decompression speed |
+| --------------------------- | ------------------- |
+| Original CPU implementation | 43 MiB/s            |
+| New GPU implementation      | 15,300 MiB/s        |
+
+That's approximately **356×** faster!
+
+This repository will be moved to read-only archive mode. No further development or updates are planned.
+
+➡️ For the latest implementation, improved performance, and future development, head over to [Geolm/bc_packed](https://github.com/Geolm/bc_packed)
+
+
+
+
+
+
+
 # bc_crunch
 
 ![C Standard](https://img.shields.io/badge/C-C99-F4A261)
